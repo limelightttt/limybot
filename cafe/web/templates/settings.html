@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <form method="post" action="/settings" class="stack">
+    <label>Название <input name="name" value="{{ cafe.name }}" required></label>
+    <label>Приветствие в боте <textarea name="greeting" rows="3" required>{{ cafe.greeting }}</textarea></label>
+    <fieldset>
+      <legend>Часы работы</legend>
+      <label class="check"><input type="checkbox" name="always_open" value="1" {% if not cafe.open_time %}checked{% endif %}> Круглосуточно</label>
+      <div class="inline">
+        <input type="time" name="open_time" value="{{ cafe.open_time.strftime('%H:%M') if cafe.open_time else '' }}" aria-label="Открытие">
+        <span>—</span>
+        <input type="time" name="close_time" value="{{ cafe.close_time.strftime('%H:%M') if cafe.close_time else '' }}" aria-label="Закрытие">
+      </div>
+    </fieldset>
+    <label>Адрес самовывоза <input name="pickup_address" value="{{ cafe.pickup_address }}"></label>
+    <fieldset>
+      <legend>Доставка</legend>
+      <label class="check"><input type="checkbox" name="delivery_enabled" value="1" {% if cafe.delivery_enabled %}checked{% endif %}> Есть доставка</label>
+      <label>Минимальный заказ, {{ cafe.currency }} <input type="number" name="delivery_min" min="0" step="1000" inputmode="numeric" value="{{ cafe.delivery_min }}"></label>
+      <label>Стоимость доставки, {{ cafe.currency }} <input type="number" name="delivery_fee" min="0" step="1000" inputmode="numeric" value="{{ cafe.delivery_fee }}"></label>
+    </fieldset>
+    <label>Об оплате (видно клиенту) <input name="payment_note" value="{{ cafe.payment_note }}"></label>
+    <button class="primary">Сохранить</button>
+  </form>
+</section>
+<section class="card">
+  <h2>Куда приходят заказы</h2>
+  {% if cafe.staff_chat_id %}
+  <p>В группу персонала. Чтобы сменить группу — добавьте бота в другую и отправьте там <code>/staff</code>.
+     Чтобы получать заказы в личку — отправьте <code>/staff</code> боту в личные сообщения.</p>
+  {% else %}
+  <p>Администраторам в личные сообщения. Чтобы заказы шли в группу персонала — добавьте туда бота
+     и отправьте в группе <code>/staff</code>.</p>
+  {% endif %}
+</section>
+<section class="card" id="admins">
+  <h2>Администраторы</h2>
+  <ul class="options">
+    {% for uid, name in admins %}
+    <li><span>{{ name or uid }}{% if uid == me %} (вы){% endif %}</span>
+      {% if uid != me %}<form method="post" action="/admins/{{ uid }}/delete"><button class="danger" title="Убрать">✕</button></form>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% if cafe.invite_link() %}
+  <p>Ссылка-приглашение (сработает один раз): <br><a href="{{ cafe.invite_link() }}">{{ cafe.invite_link() }}</a></p>
+  {% endif %}
+  <form method="post" action="/settings/invite"><button>Новая ссылка-приглашение</button></form>
+</section>
+{% endblock %}
