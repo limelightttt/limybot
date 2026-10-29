@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block head %}<meta http-equiv="refresh" content="30">{% endblock %}
+{% block content %}
+<p class="muted">Сегодня: {{ today[0] }} заказов на {{ cafe.money(today[1]) }}</p>
+<div class="tabs">
+  <a href="/orders" {% if not show_all %}class="on"{% endif %}>Активные</a>
+  <a href="/orders?all=1" {% if show_all %}class="on"{% endif %}>Все</a>
+</div>
+{% for o in orders %}
+<section class="card order status-{{ o.status }}">
+  <div class="row">
+    <h2>№{{ o.number }}</h2>
+    <span class="badge">{{ STATUSES[o.status] }}</span>
+  </div>
+  <p class="muted">{{ o.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m %H:%M") }} ·
+    {% if o.method == "delivery" %}🚗 Доставка{% else %}🏃 Самовывоз{% endif %}</p>
+  <ul class="lines">
+    {% for ln in o.lines %}
+    <li><span>{{ ln.name }}{% if ln.options %} <small>({{ ln.options | join(", ") }})</small>{% endif %} × {{ ln.qty }}</span>
+        <span>{{ cafe.money(ln.unit * ln.qty) }}</span></li>
+    {% endfor %}
+    {% if o.delivery_fee %}<li><span>Доставка</span><span>{{ cafe.money(o.delivery_fee) }}</span></li>{% endif %}
+    <li class="total"><span>Итого</span><span>{{ cafe.money(o.total) }}</span></li>
+  </ul>
+  <p>💳 {{ PAYMENT_METHODS[o.payment_method] }} · {{ PAYMENT_STATUSES[o.payment_status] }}</p>
+  {% if o.address %}<p>📍 {{ o.address }}</p>{% endif %}
+  <p>👤 {{ o.customer }}, <a href="tel:{{ o.phone }}">{{ o.phone }}</a></p>
+  {% if o.comment %}<p>💬 {{ o.comment }}</p>{% endif %}
+  {% if next_statuses.get(o.status) %}
+  <form method="post" action="/orders/{{ o.id }}/status{% if show_all %}?all=1{% endif %}" class="actions">
+    {% for s in next_statuses[o.status] %}
+    <button name="status" value="{{ s }}" class="{{ 'danger' if s == 'cancelled' else 'primary' }}">{{ ACTIONS[s] }}</button>
+    {% endfor %}
+  </form>
+  {% endif %}
+</section>
+{% else %}
+<p class="muted">{% if show_all %}Заказов пока нет.{% else %}Активных заказов нет. Страница обновляется сама.{% endif %}</p>
+{% endfor %}
+{% endblock %}

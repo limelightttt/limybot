@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>{{ item.name if item else "Новая позиция" }}</h1>
+  <form method="post" action="/items/{{ item.id if item else 'new' }}" enctype="multipart/form-data" class="stack">
+    <label>Название <input name="name" value="{{ item.name if item else '' }}" required></label>
+    <label>Цена, {{ cafe.currency }} <input name="price" type="number" min="0" step="100" inputmode="numeric" value="{{ item.price if item else '' }}" required></label>
+    <label>Раздел
+      <select name="category_id">
+        {% for c in categories %}<option value="{{ c.id }}" {% if c.id == category_id %}selected{% endif %}>{{ c.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Описание <textarea name="description" maxlength="500" rows="3">{{ item.description if item else '' }}</textarea></label>
+    <fieldset>
+      <legend>Добавки</legend>
+      {% for g in groups %}
+      <label class="check"><input type="checkbox" name="groups" value="{{ g.id }}" {% if item and g in item.groups %}checked{% endif %}>
+        {{ g.name }} <small class="muted">({{ g.options | map(attribute="name") | join(", ") }})</small></label>
+      {% else %}
+      <p class="muted">Групп добавок пока нет — создайте их на вкладке «Добавки».</p>
+      {% endfor %}
+    </fieldset>
+    <fieldset>
+      <legend>Фото</legend>
+      {% if item and item.photo %}
+      <img class="preview" src="/media/{{ item.photo }}" alt="">
+      <label class="check"><input type="checkbox" name="remove_photo" value="1"> Удалить фото</label>
+      {% endif %}
+      <input type="file" name="photo" accept="image/*">
+    </fieldset>
+    <button class="primary">Сохранить</button>
+  </form>
+</section>
+{% if item %}
+<form method="post" action="/items/{{ item.id }}/delete" onsubmit="return confirm('Удалить «{{ item.name }}»?')">
+  <button class="danger">Удалить позицию</button>
+</form>
+{% endif %}
+{% endblock %}

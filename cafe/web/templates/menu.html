@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+{% for cat in categories %}
+<section class="card">
+  <div class="row">
+    <form method="post" action="/categories/{{ cat.id }}" class="inline grow">
+      <input name="name" value="{{ cat.name }}" required aria-label="Название раздела">
+      <button>Сохранить</button>
+    </form>
+  </div>
+  <div class="row small-actions">
+    <form method="post" action="/categories/{{ cat.id }}/move"><button name="step" value="-1" title="Выше">↑</button></form>
+    <form method="post" action="/categories/{{ cat.id }}/move"><button name="step" value="1" title="Ниже">↓</button></form>
+    {% if not cat.items %}
+    <form method="post" action="/categories/{{ cat.id }}/delete"><button class="danger">Удалить раздел</button></form>
+    {% endif %}
+  </div>
+  <ul class="items">
+    {% for it in cat.items %}
+    <li id="item-{{ it.id }}" class="{{ '' if it.available else 'stopped' }}">
+      <a href="/items/{{ it.id }}" class="item">
+        {% if it.photo %}<img src="/media/{{ it.photo }}" alt="">{% else %}<span class="nophoto">нет фото</span>{% endif %}
+        <span>{{ it.name }}<br><small>{{ cafe.money(it.price) }}{% if it.groups %} · {{ it.groups | map(attribute="name") | join(", ") }}{% endif %}</small></span>
+      </a>
+      <div class="small-actions">
+        <form method="post" action="/items/{{ it.id }}/available">
+          {% if it.available %}<button>В стоп</button>{% else %}<input type="hidden" name="available" value="1"><button class="primary">Вернуть</button>{% endif %}
+        </form>
+        <form method="post" action="/items/{{ it.id }}/move"><button name="step" value="-1">↑</button></form>
+        <form method="post" action="/items/{{ it.id }}/move"><button name="step" value="1">↓</button></form>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  <a class="button" href="/items/new?category_id={{ cat.id }}">+ Позиция</a>
+</section>
+{% endfor %}
+<section class="card">
+  <h2>Новый раздел</h2>
+  <form method="post" action="/categories" class="inline">
+    <input name="name" placeholder="Например, Завтраки" required>
+    <button class="primary">Добавить</button>
+  </form>
+</section>
+{% endblock %}

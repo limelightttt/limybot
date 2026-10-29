@@ -7,23 +7,34 @@
   "pickup_address": "Ташкент, ул. Примерная, 1",
   "delivery": {"enabled": true, "min_order": 50000, "fee": 15000},
   "payment_note": "Оплата наличными или картой при получении",
+  "modifiers": [
+    {"name": "Размер", "options": [
+      {"name": "S"}, {"name": "M", "price": 4000}, {"name": "L", "price": 8000}
+    ]},
+    {"name": "Молоко", "options": [
+      {"name": "обычное"}, {"name": "овсяное", "price": 6000}, {"name": "кокосовое", "price": 6000}
+    ]},
+    {"name": "Сироп", "multiple": true, "options": [
+      {"name": "ваниль", "price": 4000}, {"name": "карамель", "price": 4000}, {"name": "лесной орех", "price": 4000}
+    ]}
+  ],
   "menu": [
     {"category": "Кофе", "items": [
-      {"id": "espresso", "name": "Эспрессо", "price": 18000},
-      {"id": "americano", "name": "Американо", "price": 22000},
-      {"id": "cappuccino", "name": "Капучино", "price": 28000},
-      {"id": "latte", "name": "Латте", "price": 30000},
-      {"id": "raf", "name": "Раф ванильный", "price": 34000}
+      {"name": "Эспрессо", "price": 18000},
+      {"name": "Американо", "price": 22000, "modifiers": ["Размер", "Сироп"]},
+      {"name": "Капучино", "price": 28000, "modifiers": ["Размер", "Молоко", "Сироп"]},
+      {"name": "Латте", "price": 30000, "description": "Двойной эспрессо и много молока", "modifiers": ["Размер", "Молоко", "Сироп"]},
+      {"name": "Раф ванильный", "price": 34000, "modifiers": ["Размер"]}
     ]},
     {"category": "Не кофе", "items": [
-      {"id": "matcha", "name": "Матча латте", "price": 35000},
-      {"id": "cocoa", "name": "Какао", "price": 26000},
-      {"id": "lemonade", "name": "Лимонад манго-маракуйя", "price": 30000}
+      {"name": "Матча латте", "price": 35000, "modifiers": ["Размер", "Молоко"]},
+      {"name": "Какао", "price": 26000, "modifiers": ["Размер", "Молоко"]},
+      {"name": "Лимонад манго-маракуйя", "price": 30000}
     ]},
     {"category": "Десерты", "items": [
-      {"id": "croissant", "name": "Круассан", "price": 20000},
-      {"id": "cheesecake", "name": "Чизкейк Нью-Йорк", "price": 38000},
-      {"id": "cookie", "name": "Печенье с шоколадом", "price": 12000}
+      {"name": "Круассан", "price": 20000},
+      {"name": "Чизкейк Нью-Йорк", "price": 38000},
+      {"name": "Печенье с шоколадом", "price": 12000}
     ]}
   ]
 }

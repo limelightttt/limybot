@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted">Добавки — выбор при заказе: размер, молоко, сиропы. Группу отмечают у нужных позиций в меню.
+  Обычная группа — клиент выбирает ровно один вариант, первый выбран по умолчанию (размер, молоко).
+  С галочкой «Можно выбрать несколько» — сколько угодно или ничего (сиропы). Доплата — в сумах, 0 — бесплатно.</p>
+{% for g in groups %}
+<section class="card" id="group-{{ g.id }}">
+  <form method="post" action="/modifiers/{{ g.id }}" class="stack">
+    <input name="name" value="{{ g.name }}" required aria-label="Название группы">
+    <label class="check"><input type="checkbox" name="multiple" value="1" {% if g.multiple %}checked{% endif %}> Можно выбрать несколько</label>
+    <button>Сохранить группу</button>
+  </form>
+  <ul class="options">
+    {% for o in g.options %}
+    <li>
+      <form method="post" action="/options/{{ o.id }}" class="inline">
+        <input name="name" value="{{ o.name }}" required aria-label="Вариант">
+        <input name="price" type="number" min="0" step="100" inputmode="numeric" value="{{ o.price }}" aria-label="Доплата" class="price">
+        <button>✓</button>
+      </form>
+      <form method="post" action="/options/{{ o.id }}/delete"><button class="danger" title="Удалить">✕</button></form>
+    </li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/modifiers/{{ g.id }}/options" class="inline">
+    <input name="name" placeholder="Новый вариант" required>
+    <input name="price" type="number" min="0" step="100" inputmode="numeric" placeholder="+сум" class="price">
+    <button class="primary">+</button>
+  </form>
+  <form method="post" action="/modifiers/{{ g.id }}/delete" onsubmit="return confirm('Удалить группу «{{ g.name }}»?')">
+    <button class="danger link">Удалить группу</button>
+  </form>
+</section>
+{% endfor %}
+<section class="card">
+  <h2>Новая группа</h2>
+  <form method="post" action="/modifiers" class="stack">
+    <input name="name" placeholder="Например, Размер" required>
+    <label class="check"><input type="checkbox" name="multiple" value="1"> Можно выбрать несколько</label>
+    <button class="primary">Создать</button>
+  </form>
+</section>
+{% endblock %}
