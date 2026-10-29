@@ -1,0 +1,29 @@
+{
+  "name": "Demo Coffee",
+  "greeting": "Привет! Это Demo Coffee ☕️\nВыберите напитки и десерты — заберите без очереди или закажите доставку.",
+  "currency": "сум",
+  "timezone": "Asia/Tashkent",
+  "hours": {"open": "07:00", "close": "23:59"},
+  "pickup_address": "Ташкент, ул. Примерная, 1",
+  "delivery": {"enabled": true, "min_order": 50000, "fee": 15000},
+  "payment_note": "Оплата наличными или картой при получении",
+  "menu": [
+    {"category": "Кофе", "items": [
+      {"id": "espresso", "name": "Эспрессо", "price": 18000},
+      {"id": "americano", "name": "Американо", "price": 22000},
+      {"id": "cappuccino", "name": "Капучино", "price": 28000},
+      {"id": "latte", "name": "Латте", "price": 30000},
+      {"id": "raf", "name": "Раф ванильный", "price": 34000}
+    ]},
+    {"category": "Не кофе", "items": [
+      {"id": "matcha", "name": "Матча латте", "price": 35000},
+      {"id": "cocoa", "name": "Какао", "price": 26000},
+      {"id": "lemonade", "name": "Лимонад манго-маракуйя", "price": 30000}
+    ]},
+    {"category": "Десерты", "items": [
+      {"id": "croissant", "name": "Круассан", "price": 20000},
+      {"id": "cheesecake", "name": "Чизкейк Нью-Йорк", "price": 38000},
+      {"id": "cookie", "name": "Печенье с шоколадом", "price": 12000}
+    ]}
+  ]
+}
