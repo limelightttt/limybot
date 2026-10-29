@@ -1,0 +1,28 @@
+{% extends "admin/base.html" %}
+{% block content %}
+<section class="card no-print">
+  <h1>Постер с QR-кодом</h1>
+  <p>Повесьте у кассы, на столы и на дверь: гость наводит камеру, открывает бота и заказывает заранее.
+     Чем больше людей знают про бота, тем больше заказов. Постер в цветах и с логотипом кафе —
+     их меняют в <a href="/settings#brand">Настройках</a>.</p>
+  {% if link %}
+  <p>Ссылка для сторис и Instagram: <a href="{{ link }}">{{ link }}</a></p>
+  <button class="primary" onclick="window.print()">Распечатать (A4)</button>
+  {% endif %}
+</section>
+{% if qr %}
+<article class="poster">
+  <div class="poster-top">
+    {% if cafe.logo %}<img src="/media/{{ cafe.logo }}" alt="">{% endif %}
+    <h2>{{ cafe.name }}</h2>
+  </div>
+  <p class="poster-lead">Закажите заранее —<br>заберите без очереди</p>
+  <p class="poster-lead uz">Oldindan buyurtma bering — navbatsiz oling</p>
+  <div class="poster-qr">{{ qr | safe }}</div>
+  <p class="poster-hint">Наведите камеру телефона · Telefon kamerasini qarating</p>
+  <p class="poster-bot">@{{ cafe.bot_username }}</p>
+</article>
+{% else %}
+<p class="muted">Бот ещё не запускался — постер появится после первого запуска.</p>
+{% endif %}
+{% endblock %}

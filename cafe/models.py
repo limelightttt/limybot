@@ -1,25 +1,31 @@
-"""Plain data the store returns and the bot and web admin render."""
+"""Plain data the store returns and the bot, the Mini App and the web admin render."""
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
 STATUSES = {
     "new": "Новый",
-    "accepted": "Готовится",
+    "accepted": "Принят",
+    "cooking": "Готовится",
     "ready": "Готов",
     "done": "Выдан",
+    "courier": "Передан курьеру",
+    "delivered": "Доставлен",
     "cancelled": "Отменён",
 }
-# what staff can do with an order in each status
-NEXT = {
-    "new": ["accepted", "cancelled"],
-    "accepted": ["ready", "cancelled"],
-    "ready": ["done"],
+# the way an order goes, by how the customer gets it; the last step means it is in the customer's hands
+FLOW = {
+    "pickup": ["new", "accepted", "cooking", "ready", "done"],
+    "delivery": ["new", "accepted", "cooking", "courier", "delivered"],
 }
+STAFF_CANCELLABLE = {"new", "accepted", "cooking"}  # nothing is cancelled once it is ready or on the way
+ACTIVE = sorted({s for flow in FLOW.values() for s in flow[:-1]})
+HANDED_OVER = {flow[-1] for flow in FLOW.values()}
+
 # online providers (payme, click) will be added here; their payment_status flips to "paid" from a callback
-PAYMENT_METHODS = {"cash": "При получении"}
-PAYMENT_STATUSES = {"pending": "Не оплачен", "paid": "Оплачен"}
+PAYMENT_METHODS = {"cash": "При получении", "transfer": "Перевод на карту"}
+PAYMENT_STATUSES = {"pending": "Не оплачен", "claimed": "Клиент сообщил о переводе", "paid": "Оплачен"}
 
 
 def money(amount: int, currency: str = "сум") -> str:
@@ -45,6 +51,13 @@ class Cafe:
     payment_note: str
     staff_chat_id: int | None
     invite_code: str | None
+    brand_color: str
+    logo: str | None
+    cover: str | None
+    card_number: str
+    card_holder: str
+    paid_until: date | None  # set by the operator: python -m cafe paid <name> <date>
+    enabled: bool
 
     def now(self) -> datetime:
         return datetime.now(ZoneInfo(self.timezone))
@@ -59,6 +72,16 @@ class Cafe:
         t = (now or self.now()).time()
         return o <= t <= c if o <= c else t >= o or t <= c  # also hours past midnight
 
+    def hours(self) -> str:
+        return f"{self.open_time:%H:%M}–{self.close_time:%H:%M}" if self.open_time and self.close_time else ""
+
+    def active(self) -> bool:
+        """Takes orders: not switched off by the operator and the subscription is paid."""
+        return self.enabled and (self.paid_until is None or self.paid_until >= self.now().date())
+
+    def payment_methods(self) -> list[str]:
+        return ["cash", "transfer"] if self.card_number else ["cash"]
+
     def money(self, amount: int) -> str:
         return money(amount, self.currency)
 
@@ -66,6 +89,13 @@ class Cafe:
         if self.invite_code and self.bot_username:
             return f"https://t.me/{self.bot_username}?start=join-{self.invite_code}"
         return None
+
+
+@dataclass
+class Customer:
+    phone: str | None
+    address: str | None
+    lang: str
 
 
 @dataclass
@@ -92,7 +122,6 @@ class Item:
     description: str
     price: int
     photo: str | None
-    photo_file_id: str | None
     available: bool
     groups: list[ModifierGroup] = field(default_factory=list)
 
@@ -109,7 +138,8 @@ class Category:
 
 @dataclass
 class CartLine:
-    id: int
+    """An item with a valid choice of options, priced by the current menu."""
+
     item: Item
     options: list[Option]
     qty: int
@@ -142,7 +172,9 @@ class Order:
     method: str
     address: str | None
     comment: str | None
-    lines: list[dict]  # snapshot at checkout: {"name", "options", "qty", "unit"}
+    # snapshot at checkout: {"item_id", "option_ids", "name", "options", "qty", "unit"}; orders placed before
+    # the Mini App have no ids and cannot be repeated
+    lines: list[dict]
     subtotal: int
     delivery_fee: int
     total: int
@@ -150,6 +182,19 @@ class Order:
     payment_method: str
     payment_status: str
     created_at: datetime
+
+    @property
+    def next_statuses(self) -> list[str]:
+        """What staff can do with the order now."""
+        flow = FLOW[self.method]
+        if self.status not in flow[:-1]:
+            return []
+        step = [flow[flow.index(self.status) + 1]]
+        return step + (["cancelled"] if self.status in STAFF_CANCELLABLE else [])
+
+    @property
+    def awaits_transfer(self) -> bool:
+        return self.payment_method == "transfer" and self.payment_status != "paid" and self.status != "cancelled"
 
     def lines_text(self, cafe: Cafe) -> str:
         return "\n".join(

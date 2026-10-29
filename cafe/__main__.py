@@ -2,6 +2,9 @@
 python -m cafe add <name> --token <TOKEN> [--from clients/x.json] — connect a cafe
 python -m cafe token <name> <TOKEN>                    — replace a cafe's bot token
 python -m cafe invite <name>                           — new link that makes its opener an admin
+python -m cafe paid <name> <YYYY-MM-DD>                — subscription paid until that day (inclusive)
+python -m cafe disable|enable <name>                   — stop / resume taking orders, e.g. for non-payment
+python -m cafe backup                                  — back up the database and photos now
 python -m cafe list"""
 
 import argparse
@@ -9,12 +12,14 @@ import asyncio
 import logging
 import re
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from pydantic import ValidationError
 
+from .backup import make_backup
 from .config import Settings
 from .runner import serve
 from .store import Store
@@ -58,6 +63,12 @@ def main() -> None:
     tok.add_argument("token")
     inv = sub.add_parser("invite", help="новая ссылка, которая делает открывшего администратором")
     inv.add_argument("name")
+    paid = sub.add_parser("paid", help="подписка оплачена до даты (включительно)")
+    paid.add_argument("name")
+    paid.add_argument("until", type=date.fromisoformat, help="ГГГГ-ММ-ДД")
+    for cmd, text in (("disable", "приостановить приём заказов"), ("enable", "возобновить приём заказов")):
+        sub.add_parser(cmd, help=text).add_argument("name")
+    sub.add_parser("backup", help="сделать бэкап базы и фото сейчас")
     sub.add_parser("list", help="список кафе")
     args = p.parse_args()
 
@@ -70,7 +81,12 @@ def main() -> None:
     store = Store(settings.db_path)
     if args.cmd == "list":
         for c in store.cafes():
-            print(f"{c.slug:20} {c.name:30} @{c.bot_username or '?':25} админов: {len(store.admins(c.id))}")
+            state = "работает" if c.active() else "НЕ принимает заказы"
+            until = f"до {c.paid_until:%d.%m.%Y}" if c.paid_until else "без срока"
+            print(f"{c.slug:20} {c.name:28} @{c.bot_username or '?':24} {until:14} {state}")
+        return
+    if args.cmd == "backup":
+        print(asyncio.run(make_backup(store, settings, date.today())))
         return
 
     if args.cmd == "add":
@@ -100,6 +116,12 @@ def main() -> None:
         print(f"Токен обновлён: @{username}. Запущенный процесс переключится сам в течение 15 секунд.")
     elif args.cmd == "invite":
         print_invite(store, cafe.id)
+    elif args.cmd == "paid":
+        store.set_paid_until(cafe.id, args.until)
+        print(f"«{cafe.name}»: подписка до {args.until:%d.%m.%Y}.")
+    elif args.cmd in ("disable", "enable"):
+        store.set_enabled(cafe.id, args.cmd == "enable")
+        print(f"«{cafe.name}»: {'приём заказов возобновлён' if args.cmd == 'enable' else 'приём заказов остановлен'}.")
 
 
 if __name__ == "__main__":
