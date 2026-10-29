@@ -1,75 +1,84 @@
-"""Telegram side of one cafe: menu → item card → cart → checkout for customers, order cards for staff,
-/admin login links for owners. Every cafe runs its own Dispatcher built here; the cafe is re-read from the
-database on every update, so edits made in the web admin apply immediately."""
+"""Telegram side of one cafe. Customers order in the Mini App (web/miniapp.py); the chat greets them with a button to it,
+sends order updates and keeps "my orders" (repeat, cancel, "I've paid" for card transfers). Staff get order cards with
+status buttons, owners get /admin login links. Every cafe runs its own Dispatcher built here; the cafe is re-read from
+the database on every update, so edits made in the web admin apply immediately."""
 
 import logging
 from contextlib import suppress
+from html import escape
+from urllib.parse import urlencode
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
-    FSInputFile,
+    CopyTextButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     Message,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
+    ReplyParameters,
+    User,
+    WebAppInfo,
 )
 
+from . import i18n
 from .config import Settings
-from .models import NEXT, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Item, Order
+from .i18n import t
+from .models import PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
 from .store import Store
 
 log = logging.getLogger(__name__)
 
-MENU, CART = "☕️ Меню", "🛒 Корзина"
-MAIN_KB = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text=MENU), KeyboardButton(text=CART)]],
-    resize_keyboard=True,
-)
-BUTTON = {
+BUTTON = {  # staff actions
     "accepted": "✅ Принять",
+    "cooking": "👨‍🍳 Готовится",
     "ready": "🔔 Готов",
     "done": "📦 Выдан",
+    "courier": "🛵 Передан курьеру",
+    "delivered": "🏁 Доставлен",
     "cancelled": "✖️ Отменить",
 }
-TO_CUSTOMER = {
-    "accepted": "Заказ №{number} принят и готовится ☕️",
-    "ready": "Заказ №{number} готов! {where}",
-    "cancelled": "Заказ №{number} отменён. Если это ошибка — напишите нам.",
-}
+STYLE = {"accepted": "success", "cancelled": "danger"}  # Telegram colours these buttons since Bot API 9.4
 
 
-class Checkout(StatesGroup):
-    method = State()
-    address = State()
-    phone = State()
-    comment = State()
-    confirm = State()
+def button(text: str, data: str | None = None, style: str | None = None, **kw) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, callback_data=data, style=style, **kw)
 
 
-def kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d) for t, d in row] for row in rows]
-    )
+def kb(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup | None:
+    rows = [row for row in rows if row]
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
-# --- orders: shared with the web admin ---
+def app_url(settings: Settings, cafe: Cafe, **query) -> str | None:
+    """The cafe's Mini App. Telegram opens only https pages, so a local http setup has none."""
+    if not settings.public_url.startswith("https://"):
+        return None
+    url = f"{settings.public_url.rstrip('/')}/app/{cafe.slug}"
+    return f"{url}?{urlencode(query)}" if query else url
+
+
+def customer_lang(store: Store, cafe_id: int, user: User | int) -> str:
+    """The language the customer picked, else their Telegram language."""
+    c = store.customer(cafe_id, user if isinstance(user, int) else user.id)
+    if c:
+        return c.lang
+    return i18n.lang_of(None if isinstance(user, int) else user.language_code)
+
+
+# --- orders: shared with the web admin and the Mini App ---
 def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
-    where = f"🚗 Доставка: {o.address}" if o.method == "delivery" else "🏃 Самовывоз"
+    where = f"🛵 Доставка: {o.address}" if o.method == "delivery" else "🏃 Самовывоз"
     fee = f"\nДоставка: {cafe.money(o.delivery_fee)}" if o.delivery_fee else ""
     payment = f"{PAYMENT_METHODS[o.payment_method]} · {PAYMENT_STATUSES[o.payment_status]}"
     text = (
         f"Заказ №{o.number} · {STATUSES[o.status]}\n\n{o.lines_text(cafe)}{fee}\nИтого: {cafe.money(o.total)}\n"
         f"💳 {payment}\n\n{where}\n👤 {o.customer}, {o.phone}" + (f"\n💬 {o.comment}" if o.comment else "")
     )
-    buttons = [(BUTTON[s], f"st:{o.id}:{s}") for s in NEXT.get(o.status, [])]
-    return text, kb([buttons]) if buttons else None
+    actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in o.next_statuses]
+    paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
+    return text, kb([actions, paid])
 
 
 async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
@@ -85,273 +94,190 @@ async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
         store.add_staff_message(o.id, chat, msg.message_id)
 
 
-async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) -> bool:
-    """Move an order forward, refresh its staff cards and tell the customer. False for stale requests."""
-    if new not in NEXT.get(o.status, []):
-        return False
-    store.set_status(cafe.id, o.id, new)
-    o = store.order(cafe.id, o.id)
+async def refresh_staff(bot: Bot, store: Store, cafe: Cafe, o: Order, note: str | None = None) -> None:
+    """Redraw the order's cards in staff chats. A note goes out as a reply to the card, so staff get a notification."""
     text, markup = staff_card(cafe, o)
     for chat_id, message_id in store.staff_messages(o.id):
         with suppress(TelegramBadRequest):  # card deleted in the chat
             await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
-    if new in TO_CUSTOMER:
-        where = "Ждём вас 🙌" if o.method == "pickup" else "Курьер уже в пути 🚗"
-        with suppress(TelegramForbiddenError):  # the customer blocked the bot
-            await bot.send_message(o.user_id, TO_CUSTOMER[new].format(number=o.number, where=where))
+        if note:
+            with suppress(TelegramBadRequest, TelegramForbiddenError):
+                reply = ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
+                await bot.send_message(chat_id, note, reply_parameters=reply)
+
+
+def customer_view(cafe: Cafe, o: Order, lang: str) -> tuple[str, InlineKeyboardMarkup | None]:
+    """The order message in the customer's chat (HTML), with cancel and card-transfer buttons while they apply."""
+    text = t(lang, "order_sent", number=o.number, name=escape(cafe.name)) + "\n\n" + i18n.order_text(cafe, o, lang)
+    if o.status != "new":
+        text += "\n\n" + t(lang, "status_line", status=i18n.STATUS[lang][o.status])
+    rows = []
+    if o.awaits_transfer and o.payment_status == "pending":
+        total = i18n.money(cafe, o.total, lang)
+        howto = t(lang, "transfer_howto", total=total, card=escape(cafe.card_number), holder=escape(cafe.card_holder))
+        text += "\n\n" + howto
+        rows.append([button(t(lang, "copy_card"), copy_text=CopyTextButton(text=cafe.card_number))])
+        rows.append([button(t(lang, "i_paid"), f"paid:{o.id}", "success")])
+    elif o.awaits_transfer:
+        text += "\n\n" + t(lang, "transfer_claimed")
+    elif o.status == "new":
+        text += "\n\n" + t(lang, "we_will_write")
+    if o.status == "new":
+        rows.append([button(t(lang, "cancel_order"), f"oc:{o.id}", "danger")])
+    return text, kb(rows)
+
+
+async def send_to_customer(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
+    text, markup = customer_view(cafe, o, customer_lang(store, cafe.id, o.user_id))
+    with suppress(TelegramForbiddenError, TelegramBadRequest):  # never started the bot, or blocked it
+        await bot.send_message(o.user_id, text, parse_mode="HTML", reply_markup=markup)
+
+
+async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) -> bool:
+    """Move an order forward, refresh its staff cards and tell the customer. False for stale requests."""
+    if new not in o.next_statuses:
+        return False
+    store.set_status(cafe.id, o.id, new)
+    o = store.order(cafe.id, o.id)
+    await refresh_staff(bot, store, cafe, o)
+    key = f"status_{new}"  # nothing is sent when the order is handed over: the customer already has it
+    if key in i18n.BOT_TEXTS["ru"]:
+        lang = customer_lang(store, cafe.id, o.user_id)
+        with suppress(TelegramForbiddenError, TelegramBadRequest):
+            await bot.send_message(o.user_id, t(lang, key, number=o.number, address=cafe.pickup_address))
     return True
 
 
-def parse_ids(raw: str) -> list[int]:
-    return [int(x) for x in raw.split(".") if x.isdigit()]
+async def mark_paid(bot: Bot, store: Store, cafe: Cafe, order_id: int) -> bool:
+    """Staff saw a card transfer arrive. False if there is nothing to confirm."""
+    if not store.confirm_payment(cafe.id, order_id):
+        return False
+    o = store.order(cafe.id, order_id)
+    await refresh_staff(bot, store, cafe, o)
+    lang = customer_lang(store, cafe.id, o.user_id)
+    with suppress(TelegramForbiddenError, TelegramBadRequest):
+        await bot.send_message(o.user_id, t(lang, "payment_received", number=o.number))
+    return True
 
 
 def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     r = Router()
 
-    async def show(q: CallbackQuery, text: str, markup: InlineKeyboardMarkup | None, photo=None) -> Message | None:
-        """Replace the tapped message: edit in place when possible, re-send when switching text ↔ photo."""
-        m = q.message
-        if photo is not None and m.photo:
-            with suppress(TelegramBadRequest):  # "message is not modified"
-                await m.edit_caption(caption=text, reply_markup=markup)
-            return None
-        if photo is None and not m.photo:
-            with suppress(TelegramBadRequest):
-                await m.edit_text(text, reply_markup=markup)
-            return None
-        with suppress(TelegramBadRequest):
-            await m.delete()
-        if photo is None:
-            return await m.answer(text, reply_markup=markup)
-        return await m.answer_photo(photo, caption=text, reply_markup=markup)
+    def start_view(cafe: Cafe, lang: str) -> tuple[str, InlineKeyboardMarkup | None]:
+        other = "ru" if lang == "uz" else "uz"
+        rows = [[button(t(lang, "my_orders"), "orders"), button(t(lang, "switch_lang"), f"lang:{other}")]]
+        if not cafe.active():
+            return t(lang, "inactive", name=cafe.name), kb(rows)
+        url = app_url(settings, cafe)
+        if not url:
+            return f"{cafe.greeting}\n\n{t(lang, 'no_webapp')}", kb(rows)
+        menu = button(t(lang, "open_menu"), style="primary", web_app=WebAppInfo(url=url))
+        return cafe.greeting, kb([[menu], *rows])
 
-    def categories_view(cafe: Cafe) -> tuple[str, InlineKeyboardMarkup | None]:
-        cats = store.menu(cafe.id)
-        if not cats:
-            return "Меню пока пустое — загляните чуть позже.", None
-        return "Выберите раздел:", kb([[(c.name, f"cat:{c.id}")] for c in cats])
+    def orders_view(cafe: Cafe, user_id: int, lang: str) -> tuple[str, InlineKeyboardMarkup | None]:
+        orders = store.customer_orders(cafe.id, user_id)
+        url = app_url(settings, cafe)
+        if not orders:
+            menu = [button(t(lang, "open_menu"), style="primary", web_app=WebAppInfo(url=url))] if url else []
+            return t(lang, "orders_empty"), kb([menu])
+        blocks, rows = [], []
+        for o in orders:
+            when = o.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m %H:%M")
+            what = ", ".join(f"{title(ln['name'], ln['options'])} × {ln['qty']}" for ln in o.lines)
+            blocks.append(
+                f"<b>№{o.number}</b> · {when} · {i18n.STATUS[lang][o.status]}\n"
+                f"{escape(what)} — {i18n.money(cafe, o.total, lang)}"
+            )
+            row = []
+            if repeat := app_url(settings, cafe, repeat=o.id):
+                row.append(button(t(lang, "repeat", number=o.number), web_app=WebAppInfo(url=repeat)))
+            if o.status == "new":
+                row.append(button(t(lang, "cancel_n", number=o.number), f"oc:{o.id}:list", "danger"))
+            rows.append(row)
+        return t(lang, "orders_title") + "\n\n" + "\n\n".join(blocks), kb(rows)
 
-    def cart_view(cafe: Cafe, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
-        lines = store.cart(cafe.id, user_id)
-        if not lines:
-            return "Корзина пуста — загляните в меню.", kb([[("☕️ Меню", "menu")]])
-        body = "\n".join(f"{ln.title} × {ln.qty} — {cafe.money(ln.sum)}" for ln in lines)
-        total = sum(ln.sum for ln in lines)
-        rows = [[(f"➖ {ln.title}", f"dec:{ln.id}"), ("➕", f"inc:{ln.id}")] for ln in lines]
-        rows += [[("🗑 Очистить", "clear"), ("✅ Оформить", "checkout")]]
-        return f"🛒 Ваш заказ:\n\n{body}\n\nИтого: {cafe.money(total)}", kb(rows)
-
-    def item_view(cafe: Cafe, it: Item, chosen: list[int]) -> tuple[str, InlineKeyboardMarkup]:
-        options = store.pick(it, chosen) or []
-        lines = [it.name] + ([it.description] if it.description else []) + [""]
-        rows = []
-        for g in it.groups:
-            names = [o.name for o in g.options if o in options]
-            lines.append(f"{g.name}{' (можно несколько)' if g.multiple else ''}: {', '.join(names) or '—'}")
-            buttons = []
-            for o in g.options:
-                if g.multiple:
-                    sel = set(chosen) ^ {o.id}
-                else:
-                    sel = (set(chosen) - {x.id for x in g.options}) | {o.id}
-                label = (
-                    ("✅ " if o in options else "") + o.name + (f" +{o.price:,}".replace(",", " ") if o.price else "")
-                )
-                buttons.append((label, f"it:{it.id}:{'.'.join(map(str, sorted(sel)))}"))
-            rows += [buttons[i : i + 3] for i in range(0, len(buttons), 3)]
-        price = it.price + sum(o.price for o in options)
-        lines.append(f"Цена: {cafe.money(price)}")
-        cat = next(c for c in store.menu(cafe.id) if c.id == it.category_id)
-        rows.append([(f"➕ В корзину · {cafe.money(price)}", f"add:{it.id}:{'.'.join(map(str, sorted(chosen)))}")])
-        rows.append([(f"← {cat.name}", f"cat:{cat.id}"), ("🛒 Корзина", "cart")])
-        return "\n".join(lines), kb(rows)
+    async def redraw(q: CallbackQuery, text: str, markup: InlineKeyboardMarkup | None, html: bool = True) -> None:
+        with suppress(TelegramBadRequest):  # "message is not modified"
+            await q.message.edit_text(text, parse_mode="HTML" if html else None, reply_markup=markup)
 
     # --- customer ---
     @r.message(CommandStart())
-    async def start(m: Message, state: FSMContext, command: CommandObject, cafe: Cafe):
-        await state.clear()
+    async def start(m: Message, command: CommandObject, cafe: Cafe):
         code = (command.args or "").removeprefix("join-")
         if command.args and store.join(cafe.id, code, m.from_user.id, m.from_user.full_name):
             return await m.answer(
                 f"Готово, вы администратор «{cafe.name}».\n\n"
                 "/admin — ссылка для входа в веб-админку (меню, цены, фото, заказы)\n"
                 "/staff — отправьте в группе персонала, чтобы заказы приходили туда\n"
-                "/stats — заказы за сегодня",
-                reply_markup=MAIN_KB,
+                "/stats — заказы за сегодня"
             )
-        await m.answer(cafe.greeting, reply_markup=MAIN_KB)
-
-    @r.message(F.text == MENU)
-    @r.message(Command("menu"))
-    async def menu(m: Message, cafe: Cafe):
-        text, markup = categories_view(cafe)
+        text, markup = start_view(cafe, customer_lang(store, cafe.id, m.from_user))
         await m.answer(text, reply_markup=markup)
 
-    @r.callback_query(F.data == "menu")
-    async def menu_cb(q: CallbackQuery, cafe: Cafe):
-        await show(q, *categories_view(cafe))
+    @r.callback_query(F.data.regexp(r"^lang:(ru|uz)$").as_("match"))
+    async def switch_lang(q: CallbackQuery, match, cafe: Cafe):
+        lang = match[1]
+        store.set_lang(cafe.id, q.from_user.id, lang)
+        await redraw(q, *start_view(cafe, lang), html=False)
         await q.answer()
 
-    @r.callback_query(F.data.startswith("cat:"))
-    async def category(q: CallbackQuery, cafe: Cafe):
-        cat = store.category(cafe.id, int(q.data[4:]))
-        if not cat:
-            return await q.answer("Раздел обновился, откройте меню заново")
-        rows = [[(f"{it.name} · {cafe.money(it.price)}", f"it:{it.id}")] for it in cat.items]
-        rows.append([("← Разделы", "menu"), ("🛒 Корзина", "cart")])
-        await show(q, f"{cat.name}\nВыберите позицию:", kb(rows))
+    @r.message(Command("orders"))
+    async def my_orders(m: Message, cafe: Cafe):
+        text, markup = orders_view(cafe, m.from_user.id, customer_lang(store, cafe.id, m.from_user))
+        await m.answer(text, parse_mode="HTML", reply_markup=markup)
+
+    @r.callback_query(F.data == "orders")
+    async def my_orders_cb(q: CallbackQuery, cafe: Cafe):
+        text, markup = orders_view(cafe, q.from_user.id, customer_lang(store, cafe.id, q.from_user))
+        await q.message.answer(text, parse_mode="HTML", reply_markup=markup)
         await q.answer()
 
-    @r.callback_query(F.data.startswith("it:"))
-    async def item(q: CallbackQuery, cafe: Cafe):
-        _, item_id, *sel = q.data.split(":")
-        it = store.item(cafe.id, int(item_id))
-        if not it:
-            return await q.answer("Этой позиции сейчас нет", show_alert=True)
-        chosen = parse_ids(sel[0]) if sel else []
-        if store.pick(it, chosen) is None:  # first open, or options changed since the card was drawn
-            chosen = it.default_options()
-        text, markup = item_view(cafe, it, chosen)
-        photo = (it.photo_file_id or FSInputFile(settings.media_dir / it.photo)) if it.photo else None
-        sent = await show(q, text, markup, photo)
-        if sent and sent.photo and not it.photo_file_id:
-            store.set_photo_file_id(it.id, sent.photo[-1].file_id)
-        await q.answer()
+    @r.callback_query(F.data.regexp(r"^oc:(\d+)(:list)?$").as_("match"))
+    async def cancel_order(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        lang = customer_lang(store, cafe.id, q.from_user)
+        if not store.cancel_by_customer(cafe.id, q.from_user.id, int(match[1])):
+            return await q.answer(t(lang, "cancel_no"), show_alert=True)
+        o = store.order(cafe.id, int(match[1]))
+        await refresh_staff(bot, store, cafe, o, note=f"❗️ Клиент отменил заказ №{o.number}")
+        await redraw(q, *(orders_view(cafe, q.from_user.id, lang) if match[2] else customer_view(cafe, o, lang)))
+        await q.answer(t(lang, "cancelled_ok", number=o.number))
 
-    @r.callback_query(F.data.startswith("add:"))
-    async def add(q: CallbackQuery, cafe: Cafe):
-        _, item_id, sel = q.data.split(":")
-        line = store.add_to_cart(cafe.id, q.from_user.id, int(item_id), parse_ids(sel))
-        if not line:
-            return await q.answer("Позиция изменилась — откройте её в меню заново", show_alert=True)
-        await q.answer(f"{line.title} в корзине: {line.qty} шт.")
+    @r.callback_query(F.data.regexp(r"^paid:(\d+)$").as_("match"))
+    async def claim_transfer(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        lang = customer_lang(store, cafe.id, q.from_user)
+        if not store.claim_transfer(cafe.id, q.from_user.id, int(match[1])):
+            return await q.answer(t(lang, "claim_no"), show_alert=True)
+        o = store.order(cafe.id, int(match[1]))
+        await refresh_staff(bot, store, cafe, o, note=f"💳 Клиент сообщил о переводе по заказу №{o.number} — проверьте")
+        await redraw(q, *customer_view(cafe, o, lang))
+        await q.answer(t(lang, "claim_ok"))
 
-    @r.message(F.text == CART)
-    @r.message(Command("cart"))
-    async def cart(m: Message, cafe: Cafe):
-        text, markup = cart_view(cafe, m.from_user.id)
-        await m.answer(text, reply_markup=markup)
-
-    @r.callback_query(F.data == "cart")
-    @r.callback_query(F.data.startswith("inc:") | F.data.startswith("dec:") | (F.data == "clear"))
-    async def cart_edit(q: CallbackQuery, cafe: Cafe):
-        if q.data == "clear":
-            store.clear(cafe.id, q.from_user.id)
-        elif q.data != "cart":
-            store.change(cafe.id, q.from_user.id, int(q.data[4:]), 1 if q.data.startswith("inc:") else -1)
-        await show(q, *cart_view(cafe, q.from_user.id))
-        await q.answer()
-
-    @r.callback_query(F.data == "checkout")
-    async def checkout(q: CallbackQuery, state: FSMContext, cafe: Cafe):
-        if not cafe.is_open():
-            return await q.answer(
-                f"Сейчас закрыто. Работаем {cafe.open_time:%H:%M}–{cafe.close_time:%H:%M}",
-                show_alert=True,
-            )
-        total = sum(ln.sum for ln in store.cart(cafe.id, q.from_user.id))
-        if not total:
-            return await q.answer("Корзина пуста")
-        options = [("🏃 Самовывоз", "m:pickup")]
-        if cafe.delivery_enabled:
-            if total >= cafe.delivery_min:
-                options.append((f"🚗 Доставка (+{cafe.money(cafe.delivery_fee)})", "m:delivery"))
-            else:
-                options.append((f"Доставка от {cafe.money(cafe.delivery_min)}", "m:min"))
-        await state.set_state(Checkout.method)
-        await show(q, "Как получите заказ?", kb([options]))
-        await q.answer()
-
-    @r.callback_query(Checkout.method, F.data == "m:min")
-    async def below_min(q: CallbackQuery, cafe: Cafe):
-        await q.answer(
-            f"Доставка от {cafe.money(cafe.delivery_min)} — добавьте что-нибудь в корзину",
-            show_alert=True,
-        )
-
-    @r.callback_query(Checkout.method, F.data.in_({"m:pickup", "m:delivery"}))
-    async def method(q: CallbackQuery, state: FSMContext, cafe: Cafe):
-        await state.update_data(method=q.data[2:])
-        if q.data == "m:delivery":
-            await state.set_state(Checkout.address)
-            return await q.message.edit_text("Напишите адрес доставки (улица, дом, подъезд, квартира):")
-        await q.message.edit_text(f"Самовывоз: {cafe.pickup_address}")
-        await ask_phone(q.message, state)
-
-    @r.message(Checkout.address, F.text)
-    async def address(m: Message, state: FSMContext):
-        await state.update_data(address=m.text.strip())
-        await ask_phone(m, state)
-
-    async def ask_phone(m: Message, state: FSMContext):
-        await state.set_state(Checkout.phone)
-        share = ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="📱 Отправить номер", request_contact=True)]],
-            resize_keyboard=True,
-            one_time_keyboard=True,
-        )
-        await m.answer("Оставьте номер телефона — нажмите кнопку или напишите его:", reply_markup=share)
-
-    @r.message(Checkout.phone, F.contact | F.text)
-    async def phone(m: Message, state: FSMContext):
-        number = m.contact.phone_number if m.contact else m.text.strip()
-        if sum(ch.isdigit() for ch in number) < 7:
-            return await m.answer("Не похоже на номер телефона, попробуйте ещё раз.")
-        await state.update_data(phone=number)
-        await state.set_state(Checkout.comment)
-        await m.answer("Комментарий к заказу? Например, «без сахара».", reply_markup=ReplyKeyboardRemove())
-        await m.answer("Или пропустите:", reply_markup=kb([[("Без комментария", "skip")]]))
-
-    @r.message(Checkout.comment, F.text)
-    @r.callback_query(Checkout.comment, F.data == "skip")
-    async def comment(event: Message | CallbackQuery, state: FSMContext, cafe: Cafe):
-        if isinstance(event, Message):
-            await state.update_data(comment=event.text.strip())
-        else:
-            await event.answer()
-        msg = event if isinstance(event, Message) else event.message
-        data = await state.get_data()
-        delivery = data["method"] == "delivery"
-        text, _ = cart_view(cafe, event.from_user.id)
-        where = f"🚗 Доставка: {data['address']}" if delivery else f"🏃 Самовывоз: {cafe.pickup_address}"
-        extra = f"\nДоставка: {cafe.money(cafe.delivery_fee)}" if delivery and cafe.delivery_fee else ""
-        await state.set_state(Checkout.confirm)
-        await msg.answer(
-            f"{text}{extra}\n\n{where}\n📱 {data['phone']}\n💳 {cafe.payment_note}",
-            reply_markup=kb([[("✏️ Изменить", "cart"), ("✅ Подтвердить заказ", "confirm")]]),
-        )
-
-    @r.callback_query(Checkout.confirm, F.data == "confirm")
-    async def confirm(q: CallbackQuery, state: FSMContext, bot: Bot, cafe: Cafe):
-        data = await state.get_data()
-        await state.clear()
-        o = store.place(
-            cafe,
-            q.from_user.id,
-            q.from_user.full_name,
-            data["phone"],
-            data["method"],
-            data.get("address"),
-            data.get("comment"),
-        )
-        if not o:
-            return await q.answer("Корзина пуста", show_alert=True)
-        await q.message.edit_text(f"Спасибо! Заказ №{o.number} отправлен, мы сообщим, когда он будет готов.")
-        await q.message.answer("Хотите что-то ещё?", reply_markup=MAIN_KB)
-        await send_to_staff(bot, store, cafe, o)
+    @r.message(Command("privacy"))
+    async def privacy(m: Message, cafe: Cafe):
+        await m.answer(t(customer_lang(store, cafe.id, m.from_user), "privacy", name=cafe.name))
 
     # --- staff ---
-    @r.callback_query(F.data.startswith("st:"))
-    async def status(q: CallbackQuery, bot: Bot, cafe: Cafe):
-        _, order_id, new = q.data.split(":")
-        o = store.order(cafe.id, int(order_id))
-        if not o or not await change_status(bot, store, cafe, o, new):
+    async def is_staff(q: CallbackQuery, cafe: Cafe) -> bool:  # async: aiogram runs sync filters in a thread
+        """Staff buttons work in the staff group and for admins. Telegram does not check that callback data came from
+        a real button, so a forged st:/pay: from a customer's chat must do nothing."""
+        in_staff_chat = cafe.staff_chat_id is not None and q.message.chat.id == cafe.staff_chat_id
+        return in_staff_chat or store.is_admin(cafe.id, q.from_user.id)
+
+    @r.callback_query(F.data.regexp(r"^st:(\d+):([a-z]+)$").as_("match"), is_staff)
+    async def status(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        o = store.order(cafe.id, int(match[1]))
+        if not o or not await change_status(bot, store, cafe, o, match[2]):
             return await q.answer("Статус уже изменён")
-        await q.answer(STATUSES[new])
+        await q.answer(STATUSES[match[2]])
+
+    @r.callback_query(F.data.regexp(r"^pay:(\d+)$").as_("match"), is_staff)
+    async def payment_received(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        if not await mark_paid(bot, store, cafe, int(match[1])):
+            return await q.answer("Оплата уже отмечена")
+        await q.answer("Оплачен")
 
     # --- owner ---
-    async def is_admin(m: Message, cafe: Cafe) -> bool:  # async: aiogram runs sync filters in a thread
+    async def is_admin(m: Message, cafe: Cafe) -> bool:
         return store.is_admin(cafe.id, m.from_user.id)
 
     @r.message(Command("admin"), F.chat.type == "private", is_admin)
@@ -374,6 +300,12 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     async def stats(m: Message, cafe: Cafe):
         n, total = store.stats(cafe.id, cafe.today())
         await m.answer(f"Сегодня: {n} заказов на {cafe.money(total)}")
+
+    # anything else typed in private (old keyboards, "hi") gets the greeting with the menu button
+    @r.message(F.chat.type == "private", F.text)
+    async def fallback(m: Message, cafe: Cafe):
+        text, markup = start_view(cafe, customer_lang(store, cafe.id, m.from_user))
+        await m.answer(text, reply_markup=markup)
 
     dp = Dispatcher()
 

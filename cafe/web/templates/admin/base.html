@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ cafe.name if cafe else "Вход" }}{% endblock %} · админка</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+{% if cafe %}<style>:root { --accent: {{ cafe.brand_color }}; }</style>{% endif %}
+{% block head %}{% endblock %}
+</head>
+<body>
+{% if cafe %}
+<header>
+  <a class="brand" href="/orders">
+    {% if cafe.logo %}<img src="/media/{{ cafe.logo | thumb }}" alt="">{% endif %}
+    <strong>{{ cafe.name }}</strong>
+  </a>
+  <div class="header-actions">
+    <a class="ghost" href="/app/{{ cafe.slug }}" target="_blank" rel="noopener">Витрина ↗</a>
+    <form method="post" action="/logout"><button class="ghost">Выйти</button></form>
+  </div>
+</header>
+<nav>
+  {% set here = request.url.path %}
+  <a href="/orders" {% if here.startswith("/orders") %}class="on"{% endif %}>Заказы</a>
+  <a href="/menu" {% if here.startswith("/menu") or here.startswith("/items") %}class="on"{% endif %}>Меню</a>
+  <a href="/modifiers" {% if here.startswith("/modifiers") %}class="on"{% endif %}>Добавки</a>
+  <a href="/promo" {% if here.startswith("/promo") %}class="on"{% endif %}>Продвижение</a>
+  <a href="/settings" {% if here.startswith("/settings") %}class="on"{% endif %}>Настройки</a>
+</nav>
+{% endif %}
+<main>
+  {% if cafe and not cafe.active() %}
+  <p class="flash danger">Подписка {% if cafe.paid_until and cafe.enabled %}закончилась {{ cafe.paid_until.strftime("%d.%m.%Y") }}{% else %}приостановлена{% endif %} —
+    бот не принимает заказы.{% if SUPPORT %} Чтобы продлить, напишите {{ SUPPORT }}.{% endif %}</p>
+  {% elif cafe and cafe.paid_until and (cafe.paid_until - cafe.now().date()).days <= 5 %}
+  <p class="flash">Подписка оплачена до {{ cafe.paid_until.strftime("%d.%m.%Y") }}.{% if SUPPORT %} Продлить: {{ SUPPORT }}.{% endif %}</p>
+  {% endif %}
+  {% if msg %}<p class="flash">{{ msg }}</p>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

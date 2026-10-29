@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "admin/base.html" %}
 {% block content %}
 <section class="card">
   <form method="post" action="/settings" class="stack">
@@ -20,8 +20,36 @@
       <label>Минимальный заказ, {{ cafe.currency }} <input type="number" name="delivery_min" min="0" step="1000" inputmode="numeric" value="{{ cafe.delivery_min }}"></label>
       <label>Стоимость доставки, {{ cafe.currency }} <input type="number" name="delivery_fee" min="0" step="1000" inputmode="numeric" value="{{ cafe.delivery_fee }}"></label>
     </fieldset>
-    <label>Об оплате (видно клиенту) <input name="payment_note" value="{{ cafe.payment_note }}"></label>
+    <fieldset id="payment">
+      <legend>Оплата</legend>
+      <label>Об оплате при получении (видно клиенту) <input name="payment_note" value="{{ cafe.payment_note }}"></label>
+      <label>Карта для переводов <input name="card_number" value="{{ cafe.card_number }}" inputmode="numeric" placeholder="8600 0000 0000 0000"></label>
+      <label>Имя на карте <input name="card_holder" value="{{ cafe.card_holder }}" placeholder="Например, Алишер А."></label>
+      <p class="muted">Если указать карту, клиент сможет выбрать «Перевод на карту»: увидит номер и сумму, после перевода
+        нажмёт «Я перевёл». Персонал проверяет поступление и нажимает «Оплата получена». Пустое поле — только оплата при получении.</p>
+    </fieldset>
     <button class="primary">Сохранить</button>
+  </form>
+</section>
+<section class="card" id="brand">
+  <h2>Оформление витрины</h2>
+  <p class="muted">Так бот выглядит для гостей: обложка сверху, логотип, фирменный цвет кнопок.
+    <a href="/app/{{ cafe.slug }}" target="_blank" rel="noopener">Открыть витрину ↗</a></p>
+  <form method="post" action="/settings/brand" enctype="multipart/form-data" class="stack">
+    <label>Фирменный цвет <input type="color" name="brand_color" value="{{ cafe.brand_color }}" class="color"></label>
+    <fieldset>
+      <legend>Логотип (квадратный)</legend>
+      {% if cafe.logo %}<img class="preview logo-preview" src="/media/{{ cafe.logo | thumb }}" alt="">
+      <label class="check"><input type="checkbox" name="remove_logo" value="1"> Удалить логотип</label>{% endif %}
+      <input type="file" name="logo" accept="image/*">
+    </fieldset>
+    <fieldset>
+      <legend>Обложка (фото зала, кофе, витрины)</legend>
+      {% if cafe.cover %}<img class="preview" src="/media/{{ cafe.cover | thumb }}" alt="">
+      <label class="check"><input type="checkbox" name="remove_cover" value="1"> Удалить обложку</label>{% endif %}
+      <input type="file" name="cover" accept="image/*">
+    </fieldset>
+    <button class="primary">Сохранить оформление</button>
   </form>
 </section>
 <section class="card">

@@ -1,15 +1,21 @@
-"""Shared fixtures: a database with the demo cafe and a fake Telegram that records every request."""
+"""Shared fixtures: a database with the demo cafe, a fake Telegram that records every request, signed Mini App data."""
 
+import hashlib
+import hmac
 import itertools
+import json
+import time
 from datetime import datetime
+from urllib.parse import urlencode
 
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import EditMessageCaption, EditMessageText, SendMessage, SendPhoto, TelegramMethod
-from aiogram.types import CallbackQuery, Chat, Message, PhotoSize, Update, User
+from aiogram.methods import EditMessageText, SendMessage, TelegramMethod
+from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
 from cafe.config import ROOT, Settings
+from cafe.models import Cafe, Order
 from cafe.store import Store
 from cafe.template import import_cafe, load_template
 
@@ -25,9 +31,6 @@ class FakeSession(BaseSession):
     async def make_request(self, bot, method, timeout=None):
         self.sent.append(method)
         chat = Chat(id=getattr(method, "chat_id", None) or 0, type="private")
-        if isinstance(method, SendPhoto):
-            photo = [PhotoSize(file_id=f"file-{next(ids)}", file_unique_id="u", width=1, height=1)]
-            return Message(message_id=next(ids), date=datetime.now(), chat=chat, photo=photo, caption=method.caption)
         if isinstance(method, SendMessage | EditMessageText):
             return Message(message_id=next(ids), date=datetime.now(), chat=chat, text=method.text)
         return True
@@ -38,14 +41,14 @@ class FakeSession(BaseSession):
     async def close(self):
         pass
 
-    def texts(self, chat: int | None = None) -> list[str]:
-        """Everything shown to a chat: messages, edits and photo captions."""
+    def messages(self, chat: int | None = None) -> list[SendMessage | EditMessageText]:
+        """Everything shown in a chat: new messages and edits."""
         return [
-            m.text if isinstance(m, SendMessage | EditMessageText) else m.caption
-            for m in self.sent
-            if isinstance(m, SendMessage | EditMessageText | SendPhoto | EditMessageCaption)
-            and (chat is None or m.chat_id == chat)
+            m for m in self.sent if isinstance(m, SendMessage | EditMessageText) and (chat is None or m.chat_id == chat)
         ]
+
+    def texts(self, chat: int | None = None) -> list[str]:
+        return [m.text for m in self.messages(chat)]
 
 
 @pytest.fixture
@@ -80,29 +83,64 @@ def option_id(store: Store, cafe_id: int, name: str) -> int:
     return next(o.id for g in store.groups(cafe_id) for o in g.options if o.name == name)
 
 
-def user(uid: int) -> User:
-    return User(id=uid, is_bot=False, first_name=f"User{uid}")
+def pick(store: Store, cafe_id: int, name: str, options: list[str] = (), qty: int = 1) -> dict:
+    """A cart line as the Mini App sends it, by names."""
+    return {
+        "item_id": item_id(store, cafe_id, name),
+        "option_ids": [option_id(store, cafe_id, o) for o in options],
+        "qty": qty,
+    }
 
 
-def message(uid: int, text: str | None = None, contact=None, chat: Chat | None = None) -> Update:
+def order(store: Store, cafe: Cafe, user_id: int, *picks: dict, **kw) -> Order:
+    """An order placed straight in the store; picks default to one espresso."""
+    picks = picks or (pick(store, cafe.id, "Эспрессо"),)
+    lines = store.lines(cafe.id, [(p["item_id"], p["option_ids"], p["qty"]) for p in picks])
+    assert None not in lines
+    fields = {
+        "phone": "+998901234567",
+        "method": "pickup",
+        "address": None,
+        "comment": None,
+        "payment_method": "cash",
+        "lang": "ru",
+    }
+    return store.place(cafe, user_id, f"User{user_id}", lines, **(fields | kw))
+
+
+def init_data(token: str, uid: int, lang: str = "ru", age: int = 0) -> str:
+    """What Telegram passes to a Mini App, signed with the bot token like Telegram does."""
+    fields = {
+        "auth_date": str(int(time.time()) - age),
+        "query_id": "q",
+        "user": json.dumps({"id": uid, "first_name": f"User{uid}", "language_code": lang}),
+    }
+    check = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    fields["hash"] = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+    return urlencode(fields)
+
+
+def user(uid: int, lang: str = "ru") -> User:
+    return User(id=uid, is_bot=False, first_name=f"User{uid}", language_code=lang)
+
+
+def message(uid: int, text: str | None = None, chat: Chat | None = None, lang: str = "ru") -> Update:
     return Update(
         update_id=next(ids),
         message=Message(
             message_id=next(ids),
             date=datetime.now(),
             chat=chat or Chat(id=uid, type="private"),
-            from_user=user(uid),
+            from_user=user(uid, lang),
             text=text,
-            contact=contact,
         ),
     )
 
 
-def tap(uid: int, data: str, photo: bool = False) -> Update:
-    """A button press under a text message, or under a photo card."""
-    chat = Chat(id=uid, type="private")
-    pic = [PhotoSize(file_id="f", file_unique_id="u", width=1, height=1)] if photo else None
-    msg = Message(message_id=next(ids), date=datetime.now(), chat=chat, text=None if photo else "…", photo=pic)
+def tap(uid: int, data: str, chat: Chat | None = None) -> Update:
+    """A button press under a message in the user's private chat, or in another chat (a staff group)."""
+    msg = Message(message_id=next(ids), date=datetime.now(), chat=chat or Chat(id=uid, type="private"), text="…")
     return Update(
         update_id=next(ids),
         callback_query=CallbackQuery(id=str(next(ids)), from_user=user(uid), chat_instance="c", message=msg, data=data),

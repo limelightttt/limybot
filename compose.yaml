@@ -1,0 +1,27 @@
+# docker compose up -d — the app plus Caddy, which gets and renews the HTTPS certificate for DOMAIN by itself.
+# Data (database, photos, daily backups) lives in ./data on the server.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:  # over .env, which is written for running without docker
+      PUBLIC_URL: https://${DOMAIN}
+      WEB_HOST: 0.0.0.0
+      DB_PATH: /app/data/limybot.db
+    volumes:
+      - ./data:/app/data
+      - ./clients:/app/clients
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+volumes:
+  caddy_data:

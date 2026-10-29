@@ -4,53 +4,51 @@ import json
 import secrets
 import sqlite3
 import time as clock
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 
-from .models import NEXT, Cafe, CartLine, Category, Item, ModifierGroup, Option, Order
+from .models import ACTIVE, HANDED_OVER, Cafe, CartLine, Category, Customer, Item, ModifierGroup, Option, Order
 
+# The current shape of the database: a new database is created from it and marked as up to date.
 SCHEMA = """
-create table if not exists cafes (
+create table cafes (
   id integer primary key, slug text not null unique, bot_token text not null unique, bot_username text,
   name text not null, greeting text not null default '', currency text not null default 'сум',
   timezone text not null default 'Asia/Tashkent', open_time text, close_time text,
   pickup_address text not null default '', delivery_enabled integer not null default 0,
   delivery_min integer not null default 0, delivery_fee integer not null default 0,
   payment_note text not null default 'Оплата наличными или картой при получении',
-  staff_chat_id integer, invite_code text
+  staff_chat_id integer, invite_code text, brand_color text not null default '#8b5e3c', logo text, cover text,
+  card_number text not null default '', card_holder text not null default '', paid_until text,
+  enabled integer not null default 1
 );
-create table if not exists admins (
+create table admins (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null,
   name text not null default '', primary key (cafe_id, user_id)
 );
-create table if not exists categories (
+create table categories (
   id integer primary key, cafe_id integer not null references cafes on delete cascade,
   name text not null, position integer not null default 0
 );
-create table if not exists items (
+create table items (
   id integer primary key, cafe_id integer not null references cafes on delete cascade,
   category_id integer not null references categories on delete cascade, name text not null,
-  description text not null default '', price integer not null, photo text, photo_file_id text,
+  description text not null default '', price integer not null, photo text,
   available integer not null default 1, position integer not null default 0
 );
-create table if not exists modifier_groups (
+create table modifier_groups (
   id integer primary key, cafe_id integer not null references cafes on delete cascade,
   name text not null, multiple integer not null default 0
 );
-create table if not exists modifier_options (
+create table modifier_options (
   id integer primary key, group_id integer not null references modifier_groups on delete cascade,
   name text not null, price integer not null default 0
 );
-create table if not exists item_modifiers (
+create table item_modifiers (
   item_id integer not null references items on delete cascade,
   group_id integer not null references modifier_groups on delete cascade, primary key (item_id, group_id)
 );
-create table if not exists carts (
-  id integer primary key, cafe_id integer not null, user_id integer not null,
-  item_id integer not null references items on delete cascade, options text not null, qty integer not null,
-  unique (cafe_id, user_id, item_id, options)
-);
-create table if not exists orders (
+create table orders (
   id integer primary key, cafe_id integer not null references cafes on delete cascade, number integer not null,
   user_id integer not null, customer text not null, phone text not null, method text not null, address text,
   comment text, lines text not null, subtotal integer not null, delivery_fee integer not null,
@@ -58,15 +56,44 @@ create table if not exists orders (
   payment_method text not null default 'cash', payment_status text not null default 'pending',
   created_at text not null, unique (cafe_id, number)
 );
-create table if not exists staff_messages (
+create table staff_messages (
   order_id integer not null references orders on delete cascade, chat_id integer not null,
   message_id integer not null, primary key (order_id, chat_id)
 );
-create table if not exists login_links (token text primary key, cafe_id integer not null,
+create table login_links (token text primary key, cafe_id integer not null,
   user_id integer not null, expires integer not null);
-create table if not exists sessions (token text primary key, cafe_id integer not null,
+create table sessions (token text primary key, cafe_id integer not null,
   user_id integer not null, expires integer not null);
+create table customers (
+  cafe_id integer not null references cafes on delete cascade, user_id integer not null, phone text,
+  address text, lang text not null default 'ru', primary key (cafe_id, user_id)
+);
 """
+
+# Steps that bring an existing database to SCHEMA; pragma user_version counts the applied ones.
+# Append only: never edit a step that may have run somewhere. tests/test_store.py checks the result equals SCHEMA.
+MIGRATIONS = [
+    # 1: statuses by how the order is received, Mini App (cart moves to the client), branding, card transfers,
+    # subscription, customer profiles
+    """
+    update orders set status = 'cooking' where status = 'accepted';
+    update orders set status = 'courier' where method = 'delivery' and status = 'ready';
+    update orders set status = 'delivered' where method = 'delivery' and status = 'done';
+    drop table carts;
+    alter table items drop column photo_file_id;
+    alter table cafes add column brand_color text not null default '#8b5e3c';
+    alter table cafes add column logo text;
+    alter table cafes add column cover text;
+    alter table cafes add column card_number text not null default '';
+    alter table cafes add column card_holder text not null default '';
+    alter table cafes add column paid_until text;
+    alter table cafes add column enabled integer not null default 1;
+    create table customers (
+      cafe_id integer not null references cafes on delete cascade, user_id integer not null, phone text,
+      address text, lang text not null default 'ru', primary key (cafe_id, user_id)
+    );
+    """,
+]
 
 CAFE_FIELDS = {
     "name",
@@ -80,8 +107,13 @@ CAFE_FIELDS = {
     "delivery_min",
     "delivery_fee",
     "payment_note",
+    "brand_color",
+    "card_number",
+    "card_holder",
 }
+CAFE_IMAGES = {"logo", "cover"}
 LOGIN_TTL = 15 * 60
+MAX_QTY = 99
 SESSION_TTL = 30 * 24 * 3600
 
 
@@ -94,8 +126,25 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
+        self.db.execute("pragma journal_mode = wal")  # readers (a backup) do not block the bots
         self.db.execute("pragma foreign_keys = on")
-        self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        if not self.db.execute("select 1 from sqlite_master where name = 'cafes'").fetchone():
+            self.db.executescript(f"begin; {SCHEMA} pragma user_version = {len(MIGRATIONS)}; commit;")
+            return
+        version = self.db.execute("pragma user_version").fetchone()[0]
+        for n, sql in enumerate(MIGRATIONS[version:], version + 1):
+            self.db.executescript(f"begin; {sql} pragma user_version = {n}; commit;")
+
+    def backup_to(self, path: Path) -> None:
+        """A consistent copy of the whole database, safe while the bots are writing."""
+        target = sqlite3.connect(path)
+        try:
+            self.db.backup(target)
+        finally:
+            target.close()
 
     def _insert(self, table: str, **values) -> int:
         cols = ", ".join(values)
@@ -120,6 +169,8 @@ class Store:
             open_time=_time(d["open_time"]),
             close_time=_time(d["close_time"]),
             delivery_enabled=bool(d["delivery_enabled"]),
+            paid_until=date.fromisoformat(d["paid_until"]) if d["paid_until"] else None,
+            enabled=bool(d["enabled"]),
         )
         return Cafe(**d)
 
@@ -149,6 +200,26 @@ class Store:
     def set_staff_chat(self, cafe_id: int, chat_id: int | None) -> None:
         with self.db:
             self.db.execute("update cafes set staff_chat_id = ? where id = ?", (chat_id, cafe_id))
+
+    def set_cafe_image(self, cafe_id: int, kind: str, name: str | None) -> str | None:
+        """Logo or cover; returns the previous file name so the caller can delete it."""
+        if kind not in CAFE_IMAGES:
+            raise ValueError(kind)
+        old = self.db.execute(f"select {kind} from cafes where id = ?", (cafe_id,)).fetchone()[0]
+        with self.db:
+            self.db.execute(f"update cafes set {kind} = ? where id = ?", (name, cafe_id))
+        return old
+
+    # --- subscription (operator, from the CLI) ---
+    def set_paid_until(self, cafe_id: int, until: date | None) -> None:
+        with self.db:
+            self.db.execute(
+                "update cafes set paid_until = ? where id = ?", (until.isoformat() if until else None, cafe_id)
+            )
+
+    def set_enabled(self, cafe_id: int, enabled: bool) -> None:
+        with self.db:
+            self.db.execute("update cafes set enabled = ? where id = ?", (int(enabled), cafe_id))
 
     # --- admins ---
     def new_invite(self, cafe_id: int) -> str:
@@ -249,7 +320,6 @@ class Store:
                 r["description"],
                 r["price"],
                 r["photo"],
-                r["photo_file_id"],
                 bool(r["available"]),
                 links.get(r["id"], []),
             )
@@ -381,13 +451,8 @@ class Store:
         if not it:
             return None
         with self.db:
-            self.db.execute("update items set photo = ?, photo_file_id = null where id = ?", (photo, item_id))
+            self.db.execute("update items set photo = ? where id = ?", (photo, item_id))
         return it.photo
-
-    def set_photo_file_id(self, item_id: int, file_id: str) -> None:
-        """Telegram's id of an uploaded photo, so the file is uploaded once per bot."""
-        with self.db:
-            self.db.execute("update items set photo_file_id = ? where id = ?", (file_id, item_id))
 
     def delete_item(self, cafe_id: int, item_id: int) -> str | None:
         """Returns the photo file name so the caller can delete it."""
@@ -429,7 +494,7 @@ class Store:
         with self.db:
             self.db.execute(f"delete from modifier_options where {self._OWN_OPTION}", (option_id, cafe_id))
 
-    # --- cart ---
+    # --- choosing ---
     @staticmethod
     def pick(item: Item, option_ids: list[int]) -> list[Option] | None:
         """Options in menu order if the choice is valid: known options, exactly one in every single-choice group."""
@@ -442,45 +507,31 @@ class Store:
             picked += in_group
         return picked if len(picked) == len(chosen) else None
 
-    def add_to_cart(self, cafe_id: int, user_id: int, item_id: int, option_ids: list[int]) -> CartLine | None:
-        it = self.item(cafe_id, item_id)
-        options = self.pick(it, option_ids) if it else None
-        if options is None:
-            return None
-        key = ".".join(str(o.id) for o in sorted(options, key=lambda o: o.id))
-        with self.db:
-            self.db.execute(
-                "insert into carts (cafe_id, user_id, item_id, options, qty) values (?, ?, ?, ?, 1)"
-                " on conflict (cafe_id, user_id, item_id, options) do update set qty = qty + 1",
-                (cafe_id, user_id, item_id, key),
-            )
-        return next(ln for ln in self.cart(cafe_id, user_id) if ln.item.id == item_id and ln.options == options)
-
-    def change(self, cafe_id: int, user_id: int, line_id: int, delta: int) -> None:
-        with self.db:
-            self.db.execute(
-                "update carts set qty = qty + ? where id = ? and cafe_id = ? and user_id = ?",
-                (delta, line_id, cafe_id, user_id),
-            )
-            self.db.execute("delete from carts where qty <= 0")
-
-    def cart(self, cafe_id: int, user_id: int) -> list[CartLine]:
+    def lines(self, cafe_id: int, wanted: list[tuple[int, list[int], int]]) -> list[CartLine | None]:
+        """(item, options, qty) picks priced by the current menu; None where the item is gone, stopped or the choice
+        is no longer valid. The cart itself lives in the Mini App, so everything it sends is checked here."""
         items = {it.id: it for c in self.menu(cafe_id) for it in c.items}
-        lines = []
-        for r in self.db.execute(
-            "select * from carts where cafe_id = ? and user_id = ? order by id",
-            (cafe_id, user_id),
-        ):
-            # lines whose item went to the stop-list or whose options changed silently drop out
-            it = items.get(r["item_id"])
-            options = self.pick(it, [int(x) for x in r["options"].split(".") if x]) if it else None
-            if options is not None:
-                lines.append(CartLine(r["id"], it, options, r["qty"]))
-        return lines
+        result = []
+        for item_id, option_ids, qty in wanted:
+            it = items.get(item_id)
+            options = self.pick(it, option_ids) if it and 0 < qty <= MAX_QTY else None
+            result.append(CartLine(it, options, qty) if options is not None else None)
+        return result
 
-    def clear(self, cafe_id: int, user_id: int) -> None:
+    # --- customers ---
+    def customer(self, cafe_id: int, user_id: int) -> Customer | None:
+        row = self.db.execute(
+            "select phone, address, lang from customers where cafe_id = ? and user_id = ?", (cafe_id, user_id)
+        ).fetchone()
+        return Customer(*row) if row else None
+
+    def set_lang(self, cafe_id: int, user_id: int, lang: str) -> None:
         with self.db:
-            self.db.execute("delete from carts where cafe_id = ? and user_id = ?", (cafe_id, user_id))
+            self.db.execute(
+                "insert into customers (cafe_id, user_id, lang) values (?, ?, ?)"
+                " on conflict (cafe_id, user_id) do update set lang = excluded.lang",
+                (cafe_id, user_id, lang),
+            )
 
     # --- orders ---
     def place(
@@ -488,27 +539,38 @@ class Store:
         cafe: Cafe,
         user_id: int,
         customer: str,
+        lines: list[CartLine],
+        *,
         phone: str,
         method: str,
         address: str | None,
         comment: str | None,
-    ) -> Order | None:
-        lines = self.cart(cafe.id, user_id)
-        if not lines:
-            return None
+        payment_method: str,
+        lang: str,
+    ) -> Order:
+        """Saves the order and remembers the phone, the delivery address and the language for next time."""
         snapshot = [
-            {"name": ln.item.name, "options": [o.name for o in ln.options], "qty": ln.qty, "unit": ln.unit}
+            {
+                "item_id": ln.item.id,
+                "option_ids": [o.id for o in ln.options],
+                "name": ln.item.name,
+                "options": [o.name for o in ln.options],
+                "qty": ln.qty,
+                "unit": ln.unit,
+            }
             for ln in lines
         ]
         subtotal = sum(ln.sum for ln in lines)
-        fee = cafe.delivery_fee if method == "delivery" else 0
+        delivery = method == "delivery"
+        fee = cafe.delivery_fee if delivery else 0
         with self.db:
             number = self.db.execute(
                 "select coalesce(max(number), 0) + 1 from orders where cafe_id = ?", (cafe.id,)
             ).fetchone()[0]
             cur = self.db.execute(
                 "insert into orders (cafe_id, number, user_id, customer, phone, method, address, comment, lines,"
-                " subtotal, delivery_fee, total, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " subtotal, delivery_fee, total, payment_method, created_at)"
+                " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     cafe.id,
                     number,
@@ -516,16 +578,22 @@ class Store:
                     customer,
                     phone,
                     method,
-                    address,
+                    address if delivery else None,
                     comment,
                     json.dumps(snapshot, ensure_ascii=False),
                     subtotal,
                     fee,
                     subtotal + fee,
+                    payment_method,
                     datetime.now(UTC).isoformat(),
                 ),
             )
-            self.db.execute("delete from carts where cafe_id = ? and user_id = ?", (cafe.id, user_id))
+            self.db.execute(
+                "insert into customers (cafe_id, user_id, phone, address, lang) values (?, ?, ?, ?, ?)"
+                " on conflict (cafe_id, user_id) do update set phone = excluded.phone,"
+                " address = coalesce(excluded.address, address), lang = excluded.lang",
+                (cafe.id, user_id, phone, address if delivery else None, lang),
+            )
         return self.order(cafe.id, cur.lastrowid)
 
     def _order(self, row: sqlite3.Row | None) -> Order | None:
@@ -540,21 +608,67 @@ class Store:
         return self._order(row.fetchone())
 
     def orders(self, cafe_id: int, active_only: bool, limit: int = 100) -> list[Order]:
-        where = f"and status in ({','.join('?' * len(NEXT))})" if active_only else ""
+        where = f"and status in ({','.join('?' * len(ACTIVE))})" if active_only else ""
         rows = self.db.execute(
             f"select * from orders where cafe_id = ? {where} order by id desc limit ?",
-            (cafe_id, *(NEXT if active_only else ()), limit),
+            (cafe_id, *(ACTIVE if active_only else ()), limit),
         )
         return [self._order(r) for r in rows]
+
+    def customer_orders(self, cafe_id: int, user_id: int, limit: int = 5) -> list[Order]:
+        rows = self.db.execute(
+            "select * from orders where cafe_id = ? and user_id = ? order by id desc limit ?", (cafe_id, user_id, limit)
+        )
+        return [self._order(r) for r in rows]
+
+    def repeat(self, cafe_id: int, user_id: int, order_id: int) -> tuple[list[CartLine], list[str]] | None:
+        """A customer's past order as lines of the current menu, plus the names of what cannot be ordered now."""
+        o = self.order(cafe_id, order_id)
+        if not o or o.user_id != user_id:
+            return None
+        wanted = [ln for ln in o.lines if "item_id" in ln]
+        found = self.lines(cafe_id, [(ln["item_id"], ln["option_ids"], ln["qty"]) for ln in wanted])
+        missing = [ln["name"] for ln in o.lines if "item_id" not in ln]
+        missing += [ln["name"] for ln, line in zip(wanted, found) if line is None]
+        return [line for line in found if line], missing
 
     def set_status(self, cafe_id: int, order_id: int, status: str) -> None:
         with self.db:
             self.db.execute("update orders set status = ? where id = ? and cafe_id = ?", (status, order_id, cafe_id))
-            if status == "done":  # handed over: cash on pickup/delivery is collected at this point
+            if status in HANDED_OVER:  # cash is collected when the order is handed over
                 self.db.execute(
                     "update orders set payment_status = 'paid' where id = ? and payment_method = 'cash'",
                     (order_id,),
                 )
+
+    def cancel_by_customer(self, cafe_id: int, user_id: int, order_id: int) -> bool:
+        """Only while nobody has accepted the order; a single statement, so it cannot race the staff's button."""
+        with self.db:
+            cur = self.db.execute(
+                "update orders set status = 'cancelled'"
+                " where id = ? and cafe_id = ? and user_id = ? and status = 'new'",
+                (order_id, cafe_id, user_id),
+            )
+        return cur.rowcount == 1
+
+    def claim_transfer(self, cafe_id: int, user_id: int, order_id: int) -> bool:
+        """The customer says the money is sent; staff still have to see it arrive."""
+        with self.db:
+            cur = self.db.execute(
+                "update orders set payment_status = 'claimed' where id = ? and cafe_id = ? and user_id = ?"
+                " and payment_method = 'transfer' and payment_status = 'pending' and status != 'cancelled'",
+                (order_id, cafe_id, user_id),
+            )
+        return cur.rowcount == 1
+
+    def confirm_payment(self, cafe_id: int, order_id: int) -> bool:
+        with self.db:
+            cur = self.db.execute(
+                "update orders set payment_status = 'paid' where id = ? and cafe_id = ?"
+                " and payment_method = 'transfer' and payment_status != 'paid' and status != 'cancelled'",
+                (order_id, cafe_id),
+            )
+        return cur.rowcount == 1
 
     def add_staff_message(self, order_id: int, chat_id: int, message_id: int) -> None:
         with self.db:

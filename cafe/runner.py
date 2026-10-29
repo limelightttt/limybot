@@ -1,16 +1,26 @@
-"""One process for all cafes: a polling Dispatcher per cafe bot plus the web admin.
-The cafe list is re-read periodically, so a cafe added with `python -m cafe add` starts without a restart."""
+"""One process for all cafes: a polling Dispatcher per cafe bot plus the web admin and the Mini App.
+The cafe list is re-read periodically, so a cafe added with `python -m cafe add` starts without a restart.
+Once a day the database and photos are backed up (backup.py)."""
 
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import date
 
 import uvicorn
 from aiogram import Bot, Dispatcher
-from aiogram.exceptions import TelegramNetworkError, TelegramServerError, TelegramUnauthorizedError
+from aiogram.exceptions import (
+    TelegramBadRequest,
+    TelegramNetworkError,
+    TelegramServerError,
+    TelegramUnauthorizedError,
+)
+from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
-from .bot import build
+from .backup import make_backup
+from .bot import app_url, build
 from .config import Settings
+from .i18n import LANGS
 from .store import Store
 from .web import create_app
 
@@ -32,6 +42,7 @@ class Runner:
         self.settings = settings
         self.running: dict[int, Running] = {}
         self.rejected: dict[int, str] = {}  # cafe id → token Telegram refused; retried once the token changes
+        self.backed_up: date | None = None
 
     def bot(self, cafe_id: int) -> Bot | None:
         r = self.running.get(cafe_id)
@@ -62,10 +73,42 @@ class Runner:
             await bot.session.close()
             return
         self.store.set_bot_username(cafe_id, me.username)
+        try:
+            await self.setup_chat(bot, cafe_id)
+        except (TelegramBadRequest, TelegramNetworkError, TelegramServerError) as e:  # cosmetic: the bot works anyway
+            log.warning("%s: cannot set the menu button and commands: %s", slug, e)
         dp = build(self.store, cafe_id, self.settings)
         task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         self.running[cafe_id] = Running(token, bot, dp, task)
         log.info("%s: @%s is running", slug, me.username)
+
+    async def setup_chat(self, bot: Bot, cafe_id: int) -> None:
+        """The "Menu" button next to the input field opens the Mini App; the command list in both languages."""
+        commands = {
+            "ru": [
+                BotCommand(command="start", description="Меню"),
+                BotCommand(command="orders", description="Мои заказы"),
+            ],
+            "uz": [
+                BotCommand(command="start", description="Menyu"),
+                BotCommand(command="orders", description="Buyurtmalarim"),
+            ],
+        }
+        for lang in LANGS:
+            await bot.set_my_commands(commands[lang], language_code=None if lang == "ru" else lang)
+        if url := app_url(self.settings, self.store.cafe(cafe_id)):
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Меню", web_app=WebAppInfo(url=url)))
+
+    async def backup(self) -> None:
+        today = date.today()
+        if self.backed_up != today:
+            try:
+                path = await make_backup(self.store, self.settings, today)
+            except OSError:
+                log.exception("backup failed, will retry")  # e.g. a full disk: the bots must keep running
+                return
+            self.backed_up = today
+            log.info("backup: %s", path)
 
     async def stop(self, cafe_id: int) -> None:
         r = self.running.pop(cafe_id)
@@ -73,10 +116,13 @@ class Runner:
         await r.task
 
     async def run(self) -> None:
+        if not self.settings.public_url.startswith("https://"):
+            log.warning("PUBLIC_URL is not https: Telegram will not open the Mini App (see README, «Локально»)")
         await self.sync()
         if not self.store.cafes():
             log.warning("No cafes yet. Add one: python -m cafe add <name> --token <TOKEN> --from <json>")
         while True:
+            await self.backup()
             await asyncio.sleep(SYNC_EVERY)
             await self.sync()
 

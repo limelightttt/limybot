@@ -1,19 +1,17 @@
-"""Whole customer → staff flows through aiogram with a fake Telegram (no network)."""
-
-from io import BytesIO
+"""The chat side through aiogram with a fake Telegram (no network): greeting, order updates by how the order is
+received, cancelling, "my orders", card transfers, staff buttons. Orders themselves come from the Mini App
+(tests/test_miniapp.py); here they are placed in the store and announced the same way."""
 
 import pytest
 from aiogram import Bot
-from aiogram.methods import AnswerCallbackQuery, EditMessageCaption, EditMessageText, SendPhoto
-from aiogram.types import Chat, Contact, FSInputFile
-from PIL import Image
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
+from aiogram.types import Chat
 
-from cafe.bot import build
+from cafe.bot import build, send_to_customer, send_to_staff
 from cafe.template import Template, import_cafe
-from cafe.web import save_photo
-from tests.conftest import FakeSession, item_id, message, tap
+from tests.conftest import FakeSession, message, order, pick, tap
 
-CUSTOMER, OWNER = 100, 7
+CUSTOMER, OWNER, GROUP = 100, 7, -500
 
 
 @pytest.fixture
@@ -25,139 +23,182 @@ def env(store, demo, settings, fake):
     async def feed(update):
         await dp.feed_update(bot, update)
 
-    return feed, session
+    async def place(**kw):
+        """An order from the Mini App: saved, sent to staff and to the customer."""
+        o = order(store, store.cafe(demo.id), CUSTOMER, *kw.pop("picks", ()), **kw)
+        await send_to_staff(bot, store, store.cafe(demo.id), o)
+        await send_to_customer(bot, store, store.cafe(demo.id), o)
+        return o
+
+    return feed, place, session
 
 
-def button(session: FakeSession, label: str) -> str:
-    """callback_data of the button whose text starts with label, in the latest keyboard."""
-    markup = next(m.reply_markup for m in reversed(session.sent) if getattr(m, "reply_markup", None))
-    return next(b.callback_data for row in markup.inline_keyboard for b in row if b.text.startswith(label))
+def buttons(m) -> list:
+    return [b for row in m.reply_markup.inline_keyboard for b in row] if m.reply_markup else []
 
 
 def alerts(session: FakeSession) -> list[str]:
     return [m.text for m in session.sent if isinstance(m, AnswerCallbackQuery) and m.text]
 
 
-async def test_order_with_modifiers_from_menu_to_ready(env, store, demo):
-    feed, session = env
+async def test_greeting_opens_the_mini_app(env, store, demo):
+    feed, _, session = env
     await feed(message(CUSTOMER, "/start"))
-    assert "Demo Coffee" in session.texts(CUSTOMER)[-1]
-    await feed(message(CUSTOMER, "☕️ Меню"))
-    await feed(tap(CUSTOMER, button(session, "Кофе")))
-    await feed(tap(CUSTOMER, button(session, "Латте")))
-    card = session.texts()[-1]
-    assert "Размер: S" in card and "Молоко: обычное" in card and "Цена: 30 000 сум" in card
-    await feed(tap(CUSTOMER, button(session, "M +4 000")))
-    await feed(tap(CUSTOMER, button(session, "овсяное")))
-    await feed(tap(CUSTOMER, button(session, "ваниль")))
-    card = session.texts()[-1]
-    assert "Размер: M" in card and "Сироп (можно несколько): ваниль" in card and "Цена: 44 000 сум" in card
-    await feed(tap(CUSTOMER, button(session, "➕ В корзину")))
-    await feed(tap(CUSTOMER, button(session, "➕ В корзину")))
-    assert alerts(session)[-1] == "Латте (M, овсяное, ваниль) в корзине: 2 шт."
+    greeting = session.messages(CUSTOMER)[-1]
+    assert greeting.text.startswith("Привет! Это Demo Coffee")
+    menu = buttons(greeting)[0]
+    assert (menu.text, menu.web_app.url, menu.style) == (
+        "☕️ Открыть меню",
+        "https://admin.example.uz/app/demo",
+        "primary",
+    )
 
-    await feed(message(CUSTOMER, "🛒 Корзина"))
-    assert "Итого: 88 000 сум" in session.texts(CUSTOMER)[-1]
-    await feed(tap(CUSTOMER, "checkout"))
-    await feed(tap(CUSTOMER, "m:pickup"))
-    await feed(message(CUSTOMER, contact=Contact(phone_number="+998901234567", first_name="A", user_id=CUSTOMER)))
-    await feed(tap(CUSTOMER, "skip"))
-    summary = session.texts(CUSTOMER)[-1]
-    assert "Самовывоз" in summary and "+998901234567" in summary and "при получении" in summary
-    await feed(tap(CUSTOMER, "confirm"))
-    assert "Заказ №1 отправлен" in "".join(session.texts(CUSTOMER))
-    staff = session.texts(OWNER)[-1]  # no staff group yet: admins get the order
-    assert "Заказ №1 · Новый" in staff and "Латте (M, овсяное, ваниль) × 2 — 88 000 сум" in staff
-    assert "При получении · Не оплачен" in staff
+    await feed(tap(CUSTOMER, "lang:uz"))
+    assert [b.text for b in buttons(session.messages(CUSTOMER)[-1])][:2] == ["☕️ Menyuni ochish", "📋 Buyurtmalarim"]
+    assert store.customer(demo.id, CUSTOMER).lang == "uz"
+    await feed(message(CUSTOMER, "🛒 Корзина"))  # a leftover keyboard from the old bot, or just "hi"
+    assert buttons(session.messages(CUSTOMER)[-1])[0].web_app
 
-    order = store.orders(demo.id, active_only=True)[0]
-    await feed(tap(OWNER, f"st:{order.id}:accepted"))
-    await feed(tap(OWNER, f"st:{order.id}:ready"))
-    assert session.texts(CUSTOMER)[-1].startswith("Заказ №1 готов!")
-    card_edits = [m for m in session.sent if isinstance(m, EditMessageText) and m.chat_id == OWNER]
-    assert "Заказ №1 · Готов" in card_edits[-1].text  # the staff card follows the status
-    await feed(tap(OWNER, f"st:{order.id}:accepted"))  # stale button: ignored
-    assert alerts(session)[-1] == "Статус уже изменён" and store.order(demo.id, order.id).status == "ready"
+    await feed(message(200, "/start", lang="uz"))  # Telegram language decides until the customer picks one
+    assert buttons(session.messages(200)[-1])[0].text == "☕️ Menyuni ochish"
+
+    store.set_enabled(demo.id, False)  # e.g. the subscription is not paid
+    await feed(message(CUSTOMER, "/start"))
+    assert "bot orqali buyurtma qabul qilmayapti" in session.texts(CUSTOMER)[-1]
+    assert not any(b.web_app for b in buttons(session.messages(CUSTOMER)[-1]))
 
 
-async def test_item_photo_is_uploaded_once(env, store, demo, settings):
-    feed, session = env
-    buf = BytesIO()
-    Image.new("RGB", (2000, 1000), "brown").save(buf, "PNG")
-    settings.media_dir.mkdir(parents=True)
-    latte = item_id(store, demo.id, "Латте")
-    store.set_photo(demo.id, latte, save_photo(buf.getvalue(), settings.media_dir))
+async def test_delivery_steps_and_texts(env, store, demo):
+    """Delivery has its own steps; the customer is never told «Ждём вас» (that was the pickup text)."""
+    feed, place, session = env
+    o = await place(picks=[pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)], method="delivery", address="Чиланзар 9")
+    card = session.messages(OWNER)[-1]
+    assert "Заказ №1 · Новый" in card.text and "🛵 Доставка: Чиланзар 9" in card.text
+    assert [(b.text, b.style) for b in buttons(card)] == [("✅ Принять", "success"), ("✖️ Отменить", "danger")]
+    before = len(session.texts(CUSTOMER))
+    for status in ("accepted", "cooking", "courier", "delivered"):
+        await feed(tap(OWNER, f"st:{o.id}:{status}"))
+    told = session.texts(CUSTOMER)[before:]
+    assert told == [
+        "Заказ №1 принят ✅ Скоро начнём готовить.",
+        "Заказ №1 готовится ☕️",
+        "Заказ №1 передан курьеру 🛵 Скоро будет у вас.",
+    ]  # nothing on «Доставлен»: the customer has it in hand
+    assert "Заказ №1 · Доставлен" in session.texts(OWNER)[-1]
+    assert store.order(demo.id, o.id).payment_status == "paid"
+    await feed(tap(OWNER, f"st:{o.id}:ready"))  # a pickup step does not exist for delivery
+    assert alerts(session)[-1] == "Статус уже изменён"
 
-    await feed(tap(CUSTOMER, f"it:{latte}"))  # from the text list: the list is replaced by a photo card
-    sent = session.sent[-2]
-    assert isinstance(sent, SendPhoto) and isinstance(sent.photo, FSInputFile) and "Латте" in sent.caption
-    file_id = store.item(demo.id, latte).photo_file_id
-    assert file_id
-    await feed(tap(CUSTOMER, button(session, "M"), photo=True))  # option toggles only edit the caption
-    assert isinstance(session.sent[-2], EditMessageCaption) and "Размер: M" in session.sent[-2].caption
-    await feed(tap(CUSTOMER, f"it:{latte}"))
-    assert session.sent[-2].photo == file_id  # Telegram already has the file
-    await feed(tap(CUSTOMER, button(session, "← Кофе"), photo=True))
-    assert session.texts()[-1].startswith("Кофе")  # back to a text list
+
+async def test_pickup_steps_in_the_customers_language(env, store, demo):
+    feed, place, session = env
+    o = await place(lang="uz")
+    await feed(tap(OWNER, f"st:{o.id}:accepted"))
+    await feed(tap(OWNER, f"st:{o.id}:cooking"))
+    card = [m for m in session.messages(OWNER) if isinstance(m, EditMessageText)][-1]
+    assert [b.text for b in buttons(card)] == ["🔔 Готов", "✖️ Отменить"]
+    await feed(tap(OWNER, f"st:{o.id}:ready"))
+    assert session.texts(CUSTOMER)[-1] == "№1 buyurtma tayyor! Sizni kutamiz: Ташкент, ул. Примерная, 1 🙌"
+    await feed(tap(OWNER, f"st:{o.id}:done"))
+    assert store.order(demo.id, o.id).status == "done"
 
 
-async def test_delivery_needs_minimum_and_address(env, store, demo):
-    feed, session = env
-    store.add_to_cart(demo.id, CUSTOMER, item_id(store, demo.id, "Эспрессо"), [])
-    await feed(tap(CUSTOMER, "checkout"))
-    assert "Доставка от 50 000 сум" in str(session.sent[-2].reply_markup)
-    for _ in range(2):
-        store.add_to_cart(demo.id, CUSTOMER, item_id(store, demo.id, "Чизкейк Нью-Йорк"), [])
-    await feed(tap(CUSTOMER, "checkout"))
-    await feed(tap(CUSTOMER, "m:delivery"))
-    await feed(message(CUSTOMER, "Чиланзар 9, кв 12"))
-    await feed(message(CUSTOMER, "90 123 45 67"))
-    await feed(message(CUSTOMER, "без сахара"))
-    await feed(tap(CUSTOMER, "confirm"))
-    o = store.orders(demo.id, active_only=True)[0]
-    assert (o.method, o.address, o.comment, o.total) == (
-        "delivery",
-        "Чиланзар 9, кв 12",
-        "без сахара",
-        18000 + 76000 + 15000,
+async def test_customer_cancels_while_new(env, store, demo):
+    feed, place, session = env
+    o = await place()
+    sent = session.messages(CUSTOMER)[-1]
+    assert sent.parse_mode == "HTML" and "✅ Заказ №1 отправлен в «Demo Coffee»" in sent.text
+    assert "Эспрессо × 1 — 18 000 сум" in sent.text and "<b>Итого: 18 000 сум</b>" in sent.text
+    assert [b.callback_data for b in buttons(sent)] == [f"oc:{o.id}"]
+
+    await feed(tap(CUSTOMER, f"oc:{o.id}"))
+    assert store.order(demo.id, o.id).status == "cancelled" and alerts(session)[-1] == "Заказ №1 отменён"
+    staff = session.messages(OWNER)
+    assert "Заказ №1 · Отменён" in staff[-2].text and not staff[-2].reply_markup  # the card follows
+    assert staff[-1].text == "❗️ Клиент отменил заказ №1" and staff[-1].reply_parameters  # a reply: staff get a ping
+    assert "Статус: Отменён" in session.texts(CUSTOMER)[-1] and not buttons(session.messages(CUSTOMER)[-1])
+
+    accepted = await place()
+    await feed(tap(OWNER, f"st:{accepted.id}:accepted"))
+    await feed(tap(CUSTOMER, f"oc:{accepted.id}"))  # the button is still on the customer's screen
+    assert (
+        alerts(session)[-1].startswith("Заказ уже готовят") and store.order(demo.id, accepted.id).status == "accepted"
     )
 
 
-async def test_closed_cafe_does_not_take_orders(env, store, demo):
-    feed, session = env
-    now = demo.now()
-    store.update_cafe(
-        demo.id,
-        open_time=(now.replace(hour=(now.hour + 2) % 24)).time(),
-        close_time=(now.replace(hour=(now.hour + 3) % 24)).time(),
-    )
-    store.add_to_cart(demo.id, CUSTOMER, item_id(store, demo.id, "Эспрессо"), [])
-    await feed(tap(CUSTOMER, "checkout"))
-    assert alerts(session)[-1].startswith("Сейчас закрыто")
+async def test_my_orders_show_the_last_five(env, store, demo):
+    feed, place, session = env
+    for _ in range(6):
+        o = await place()
+    await feed(tap(OWNER, f"st:{o.id}:accepted"))
+    await feed(message(CUSTOMER, "/orders"))
+    view = session.messages(CUSTOMER)[-1]
+    assert view.text.startswith("📋 Ваши последние заказы")
+    assert "<b>№6</b>" in view.text and "<b>№2</b>" in view.text and "<b>№1</b>" not in view.text
+    assert "№6</b> · " in view.text and " · Принят\n" in view.text
+    rows = view.reply_markup.inline_keyboard
+    assert [b.text for b in rows[0]] == ["🔁 Повторить №6"]  # accepted: no cancel
+    assert rows[0][0].web_app.url == f"https://admin.example.uz/app/demo?repeat={o.id}"
+    assert [b.text for b in rows[1]] == ["🔁 Повторить №5", "✖️ Отменить №5"]
+
+    await feed(tap(CUSTOMER, rows[1][1].callback_data))
+    assert " · Отменён\n" in session.texts(CUSTOMER)[-1]  # the list is redrawn in place
+    await feed(tap(200, "orders"))
+    assert session.texts(200)[-1].startswith("Заказов пока нет")
+
+
+async def test_card_transfer(env, store, demo):
+    feed, place, session = env
+    store.update_cafe(demo.id, card_number="8600 1234 5678 9012", card_holder="Ali V.")
+    o = await place(payment_method="transfer")
+    sent = session.messages(CUSTOMER)[-1]
+    assert "Переведите 18 000 сум на карту <code>8600 1234 5678 9012</code> (Ali V.)" in sent.text
+    copy, paid, cancel = buttons(sent)
+    assert copy.copy_text.text == "8600 1234 5678 9012" and paid.callback_data == f"paid:{o.id}"
+    assert cancel.callback_data == f"oc:{o.id}"
+    assert "Перевод на карту · Не оплачен" in session.texts(OWNER)[-1]
+
+    await feed(tap(CUSTOMER, f"paid:{o.id}"))
+    assert store.order(demo.id, o.id).payment_status == "claimed"
+    assert session.texts(OWNER)[-1] == "💳 Клиент сообщил о переводе по заказу №1 — проверьте"
+    card = session.messages(OWNER)[-2]
+    assert "Клиент сообщил о переводе" in card.text and "💳 Оплата получена" in [b.text for b in buttons(card)]
+    await feed(tap(OWNER, f"pay:{o.id}"))
+    assert store.order(demo.id, o.id).payment_status == "paid"
+    assert session.texts(CUSTOMER)[-1] == "Оплата по заказу №1 получена ✅ Спасибо!"
+    await feed(tap(OWNER, f"pay:{o.id}"))
+    assert alerts(session)[-1] == "Оплата уже отмечена"
+
+
+async def test_forged_staff_buttons_do_nothing(env, store, demo):
+    """Telegram does not check that callback data came from a real button."""
+    feed, place, _ = env
+    o = await place(payment_method="cash")
+    await feed(tap(CUSTOMER, f"st:{o.id}:accepted"))
+    await feed(tap(CUSTOMER, f"pay:{o.id}"))
+    assert store.order(demo.id, o.id).status == "new"
+    store.set_staff_chat(demo.id, GROUP)
+    await feed(tap(555, f"st:{o.id}:accepted", chat=Chat(id=GROUP, type="supergroup")))  # any barista in the group
+    assert store.order(demo.id, o.id).status == "accepted"
 
 
 async def test_owner_commands(env, store, demo):
-    feed, session = env
+    feed, place, session = env
     await feed(message(CUSTOMER, "/admin"))
-    assert session.texts(CUSTOMER) == []  # not an admin: silence
+    assert "login" not in session.texts(CUSTOMER)[-1]  # not an admin: just the greeting
     await feed(message(OWNER, "/admin"))
     link = session.texts(OWNER)[-1].split()[-1]
     assert link.startswith("https://admin.example.uz/login/")
     assert store.consume_login(link.rsplit("/", 1)[1])
 
-    group = Chat(id=-500, type="supergroup")
-    await feed(message(OWNER, "/staff", chat=group))
-    assert store.cafe(demo.id).staff_chat_id == -500
-    store.add_to_cart(demo.id, CUSTOMER, item_id(store, demo.id, "Эспрессо"), [])
-    await feed(tap(CUSTOMER, "checkout"))
-    await feed(tap(CUSTOMER, "m:pickup"))
-    await feed(message(CUSTOMER, "+998901234567"))
-    await feed(tap(CUSTOMER, "skip"))
-    await feed(tap(CUSTOMER, "confirm"))
-    assert "Заказ №1 · Новый" in session.texts(-500)[-1]  # orders now go to the staff group
-
+    await feed(message(OWNER, "/staff", chat=Chat(id=GROUP, type="supergroup")))
+    assert store.cafe(demo.id).staff_chat_id == GROUP
+    await place()
+    assert "Заказ №1 · Новый" in session.texts(GROUP)[-1]  # orders now go to the staff group
     await feed(message(OWNER, "/stats"))
     assert session.texts(OWNER)[-1] == "Сегодня: 1 заказов на 18 000 сум"
+    await feed(message(CUSTOMER, "/privacy"))
+    assert session.texts(CUSTOMER)[-1].startswith("Что мы храним")
 
 
 async def test_two_cafes_one_process(store, demo, settings):
@@ -177,20 +218,17 @@ async def test_two_cafes_one_process(store, demo, settings):
 
     await dp_b.feed_update(bot_b, message(CUSTOMER, "/start"))
     assert b.texts(CUSTOMER)[-1] == "Чай!"
-    await dp_b.feed_update(bot_b, message(CUSTOMER, "☕️ Меню"))
-    assert "Чай" in str(b.sent[-1].reply_markup) and "Кофе" not in str(b.sent[-1].reply_markup)
-    tea = item_id(store, other_id, "Зелёный")
-    await dp_a.feed_update(bot_a, tap(CUSTOMER, f"add:{tea}:"))  # another cafe's item id in this bot
-    assert store.cart(demo.id, CUSTOMER) == [] and "Позиция изменилась" in alerts(a)[-1]
-
-    await dp_b.feed_update(bot_b, tap(CUSTOMER, f"add:{tea}:"))
-    for update in (
-        tap(CUSTOMER, "checkout"),
-        tap(CUSTOMER, "m:pickup"),
-        message(CUSTOMER, "+998901234567"),
-        tap(CUSTOMER, "skip"),
-        tap(CUSTOMER, "confirm"),
-    ):
-        await dp_b.feed_update(bot_b, update)
+    assert buttons(b.messages(CUSTOMER)[-1])[0].web_app.url.endswith("/app/tea")
+    tea = store.cafe(other_id)
+    o = order(store, tea, CUSTOMER, pick(store, other_id, "Зелёный"))
+    await send_to_staff(bot_b, store, tea, o)
     assert "Зелёный × 1" in b.texts(9)[-1]  # the tea owner gets it through the tea bot
-    assert a.texts(OWNER) == [] and store.orders(demo.id, active_only=False) == []
+    assert a.sent == []
+
+    # ids from another cafe do nothing in this bot, even for its admin
+    await dp_a.feed_update(bot_a, tap(OWNER, f"st:{o.id}:accepted"))
+    await dp_a.feed_update(bot_a, tap(CUSTOMER, f"oc:{o.id}"))
+    assert store.order(other_id, o.id).status == "new"
+    await dp_a.feed_update(bot_a, message(CUSTOMER, "/orders"))
+    assert a.texts(CUSTOMER)[-1].startswith("Заказов пока нет")
+    assert not [m for m in a.sent if isinstance(m, SendMessage) and m.chat_id == 9]
