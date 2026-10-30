@@ -52,7 +52,7 @@ async def test_page_has_the_menu_and_the_brand(app, store, demo):
     assert "Латте" in names and "Круассан" not in names  # the stop-list is hidden
     latte = next(it for c in data["menu"] for it in c["items"] if it["name"] == "Латте")
     assert [g["name"] for g in latte["groups"]] == ["Размер", "Молоко", "Сироп"]
-    assert data["delivery"] == {"enabled": True, "min": 50000, "fee": 15000} and data["payments"] == ["cash"]
+    assert data["delivery"] == {"enabled": True, "min": 50000, "fee": 15000} and data["payments"] == ["cash", "transfer"]
     assert set(data["texts"]) == {"ru", "uz"} and data["texts"]["uz"].keys() == data["texts"]["ru"].keys()
     assert (await client.get("/app/nope")).status_code == 404
 
@@ -113,6 +113,7 @@ async def test_checkout_rules(app, store, demo):
     cakes = pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)
     assert await refused(body(cakes, method="delivery", address="  ")) == "address"
     assert await refused(body(espresso, phone="12")) == "phone"
+    store.update_cafe(demo.id, card_number="")
     assert await refused(body(espresso, payment="transfer")) == "payment"  # no card in the settings
     assert await refused(body(espresso, change_from=10000)) == "change"  # less than the order
     assert await refused(body(pick(store, demo.id, "Латте", ["обычное"]))) == "menu_changed"  # no size

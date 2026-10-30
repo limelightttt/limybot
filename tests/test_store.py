@@ -28,7 +28,7 @@ def test_demo_import(store, demo):
     latte = store.item(demo.id, item_id(store, demo.id, "Латте"))
     assert [g.name for g in latte.groups] == ["Размер", "Молоко", "Сироп"]
     assert latte.description and demo.delivery_min == 50000 and demo.greeting.startswith("Привет")
-    assert demo.active() and demo.payment_methods() == ["cash"]  # no card: no transfers
+    assert demo.active() and demo.payment_methods() == ["cash", "transfer"]  # the demo has a card
 
 
 def test_template_rejects_unknown_modifier():
