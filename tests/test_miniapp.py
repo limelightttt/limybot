@@ -86,11 +86,11 @@ async def test_order_from_the_mini_app(app, store, demo):
     for part in (
         "Латте (M, овсяное, ваниль) × 2 — 88 000 сум",
         "Доставка — 15 000 сум",
-        "<b>Итого: 103 000 сум</b>",
+        "Итого: 103 000 сум",
         "🛵 Доставка: Чиланзар 9, кв 12",
         "📱 +998 90 123 45 67",
         "💬 без сахара",
-        "💳 Оплата при получении",
+        "💵 Наличными при получении",
     ):
         assert part in sent
 
@@ -181,5 +181,5 @@ async def test_language_choice_reaches_the_bot(app, store, demo):
     await client.post("/app/demo/lang", json={"lang": "uz"}, headers=signed())
     assert (await client.get("/app/demo/me", headers=signed())).json()["lang"] == "uz"
     await client.post("/app/demo/orders", json=body(pick(store, demo.id, "Эспрессо"), lang="uz"), headers=signed())
-    assert "✅ №1 buyurtma «Demo Coffee»ga yuborildi" in session.texts(CUSTOMER)[-1]
+    assert "✅ №1 buyurtma yuborildi · Demo Coffee" in session.texts(CUSTOMER)[-1]
     assert "18 000 soʻm" in session.texts(CUSTOMER)[-1]

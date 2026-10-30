@@ -73,16 +73,16 @@ async def test_delivery_steps_and_texts(env, store, demo):
     feed, place, session = env
     o = await place(picks=[pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)], method="delivery", address="Чиланзар 9")
     card = session.messages(OWNER)[-1]
-    assert "Заказ №1 · Новый" in card.text and "🛵 Доставка: Чиланзар 9" in card.text
+    assert "Заказ №1</b> · Новый" in card.text and "📍 Чиланзар 9" in card.text
     assert [(b.text, b.style) for b in buttons(card)] == [("✅ Принять", "success"), ("✖️ Отменить", "danger")]
     before = len(session.texts(CUSTOMER))
     for status in ("accepted", "cooking", "courier", "delivered"):
         await feed(tap(OWNER, f"st:{o.id}:{status}"))
     told = session.texts(CUSTOMER)[before:]
     assert told == [
-        "Заказ №1 принят ✅ Скоро начнём готовить.",
-        "Заказ №1 готовится ☕️",
-        "Заказ №1 передан курьеру 🛵 Скоро будет у вас.",
+        "✅ Заказ №1 принят\nСкоро начнём готовить.",
+        "👨‍🍳 Заказ №1 готовится",
+        "🛵 Заказ №1 у курьера\nСкоро будет у вас.",
     ]  # nothing on «Доставлен»: the customer has it in hand
     assert "Заказ №1 · Доставлен" in session.texts(OWNER)[-1]
     assert store.order(demo.id, o.id).payment_status == "paid"
@@ -98,7 +98,7 @@ async def test_pickup_steps_in_the_customers_language(env, store, demo):
     card = [m for m in session.messages(OWNER) if isinstance(m, EditMessageText)][-1]
     assert [b.text for b in buttons(card)] == ["🔔 Готов", "✖️ Отменить"]
     await feed(tap(OWNER, f"st:{o.id}:ready"))
-    assert session.texts(CUSTOMER)[-1] == "№1 buyurtma tayyor! Sizni kutamiz: Ташкент, ул. Примерная, 1 🙌"
+    assert session.texts(CUSTOMER)[-1] == "🔔 №1 buyurtma tayyor!\nSizni kutamiz: Ташкент, ул. Примерная, 1"
     await feed(tap(OWNER, f"st:{o.id}:done"))
     assert store.order(demo.id, o.id).status == "done"
 
@@ -107,14 +107,14 @@ async def test_customer_cancels_while_new(env, store, demo):
     feed, place, session = env
     o = await place()
     sent = session.messages(CUSTOMER)[-1]
-    assert sent.parse_mode == "HTML" and "✅ Заказ №1 отправлен в «Demo Coffee»" in sent.text
+    assert sent.parse_mode == "HTML" and "✅ <b>Заказ №1 отправлен</b> · Demo Coffee" in sent.text
     assert "Эспрессо × 1 — 18 000 сум" in sent.text and "<b>Итого: 18 000 сум</b>" in sent.text
     assert [b.callback_data for b in buttons(sent)] == [f"oc:{o.id}"]
 
     await feed(tap(CUSTOMER, f"oc:{o.id}"))
     assert store.order(demo.id, o.id).status == "cancelled" and alerts(session)[-1] == "Заказ №1 отменён"
     staff = session.messages(OWNER)
-    assert "Заказ №1 · Отменён" in staff[-2].text and not staff[-2].reply_markup  # the card follows
+    assert "Заказ №1</b> · Отменён" in staff[-2].text and not staff[-2].reply_markup  # the card follows
     assert staff[-1].text == "❗️ Клиент отменил заказ №1" and staff[-1].reply_parameters  # a reply: staff get a ping
     assert "Статус: Отменён" in session.texts(CUSTOMER)[-1] and not buttons(session.messages(CUSTOMER)[-1])
 
@@ -156,16 +156,16 @@ async def test_card_transfer(env, store, demo):
     copy, paid, cancel = buttons(sent)
     assert copy.copy_text.text == "8600 1234 5678 9012" and paid.callback_data == f"paid:{o.id}"
     assert cancel.callback_data == f"oc:{o.id}"
-    assert "Перевод на карту · Не оплачен" in session.texts(OWNER)[-1]
+    assert "💳 Перевод · ⏳ не оплачен" in session.texts(OWNER)[-1]
 
     await feed(tap(CUSTOMER, f"paid:{o.id}"))
     assert store.order(demo.id, o.id).payment_status == "claimed"
     assert session.texts(OWNER)[-1] == "💳 Клиент сообщил о переводе по заказу №1 — проверьте"
     card = session.messages(OWNER)[-2]
-    assert "Клиент сообщил о переводе" in card.text and "💳 Оплата получена" in [b.text for b in buttons(card)]
+    assert "клиент сообщил о переводе" in card.text and "💳 Оплата получена" in [b.text for b in buttons(card)]
     await feed(tap(OWNER, f"pay:{o.id}"))
     assert store.order(demo.id, o.id).payment_status == "paid"
-    assert session.texts(CUSTOMER)[-1] == "Оплата по заказу №1 получена ✅ Спасибо!"
+    assert session.texts(CUSTOMER)[-1] == "💳 Оплата по заказу №1 получена\nСпасибо!"
     await feed(tap(OWNER, f"pay:{o.id}"))
     assert alerts(session)[-1] == "Оплата уже отмечена"
 
@@ -249,7 +249,7 @@ async def test_couriers_take_and_deliver(env, store, demo):
     await feed(tap(OWNER, f"st:{o.id}:delivered"))  # a stale or forged button
     assert store.order(demo.id, o.id).status == "courier"
     card = session.messages(-700)[-1]
-    assert "📍 Чиланзар 9" in card.text and "Получить с клиента: 129 000 сум" in card.text
+    assert "📍 <b>Чиланзар 9</b>" in card.text and "💵 Получить <b>129 000 сум</b>" in card.text
     assert [b.callback_data for b in buttons(card)] == [f"take:{o.id}"]
 
     await feed(tap(CUSTOMER, f"take:{o.id}"))  # forged from a private chat: nothing
@@ -259,8 +259,8 @@ async def test_couriers_take_and_deliver(env, store, demo):
     await feed(tap(302, f"take:{o.id}", chat=couriers))
     assert alerts(session)[-1] == "Заказ уже взял другой курьер"
     card = session.messages(-700)[-1]
-    assert "Везёт: User301" in card.text and [b.callback_data for b in buttons(card)] == [f"dlv:{o.id}"]
-    assert "🛵 Везёт: User301" in [m for m in session.messages(OWNER) if isinstance(m, EditMessageText)][-1].text
+    assert "Везёт: <b>User301</b>" in card.text and [b.callback_data for b in buttons(card)] == [f"dlv:{o.id}"]
+    assert "🛵 Везёт: <b>User301</b>" in [m for m in session.messages(OWNER) if isinstance(m, EditMessageText)][-1].text
     await feed(tap(302, f"dlv:{o.id}", chat=couriers))  # only the one who took it
     assert store.order(demo.id, o.id).status == "courier"
     await feed(tap(301, f"dlv:{o.id}", chat=couriers))
@@ -313,7 +313,10 @@ async def test_finance_group_gets_receipts_and_checks_transfers(env, store, demo
     assert "Оплата получена" not in str(session.messages(GROUP)[-1].reply_markup)  # money is checked in finance
     await feed(tap(CUSTOMER, f"paid:{o.id}"))
     card = session.messages(-900)[-1]
-    assert "💳 Перевод по заказу №1 · 18 000 сум" in card.text and buttons(card)[0].callback_data == f"pay:{o.id}"
+    assert (
+        "💳 <b>Перевод · заказ №1</b>\n<b>18 000 сум</b>" in card.text
+        and buttons(card)[0].callback_data == f"pay:{o.id}"
+    )
     assert "скриншот" in session.texts(CUSTOMER)[-1]
 
     photo = message(CUSTOMER)
@@ -330,7 +333,7 @@ async def test_finance_group_gets_receipts_and_checks_transfers(env, store, demo
 
     for status in ("accepted", "cooking", "ready", "done"):
         await feed(tap(OWNER, f"st:{o.id}:{status}"))
-    assert session.texts(-900)[-1].endswith("18 000 сум · самовывоз · перевод, подтверждён")
+    assert session.texts(-900)[-1].endswith("18 000 сум · самовывоз · 💳 перевод, подтверждён")
     cancelled = await place()
     await feed(tap(CUSTOMER, f"oc:{cancelled.id}"))
     assert session.texts(-900)[-1].endswith("отменён клиентом")
@@ -348,15 +351,15 @@ async def test_cash_change_and_courier_cash_in_report(env, store, demo):
     o = await place(
         picks=[pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)], method="delivery", address="A", change_from=200000
     )
-    assert "💵 Сдача с 200 000 сум → дать 71 000 сум" in session.texts(OWNER)[-1]
+    assert "💵 Наличными · сдача с 200 000 сум → дать 71 000 сум" in session.texts(OWNER)[-1]
     assert "сдача с 200 000 сум" in session.texts(CUSTOMER)[-1]
     for status in ("accepted", "cooking", "courier"):
         await feed(tap(OWNER, f"st:{o.id}:{status}"))
-    assert "Сдача с 200 000 сум → дать 71 000 сум" in session.texts(-700)[-1]
+    assert "сдача с 200 000 сум → дать 71 000 сум" in session.texts(-700)[-1]
     await feed(tap(301, f"take:{o.id}", chat=couriers))
     await feed(tap(301, f"dlv:{o.id}", chat=couriers))
     await feed(message(OWNER, "/report"))
-    assert "Наличные у курьеров:\n  User301: 129 000 сум" in session.texts(OWNER)[-1]
+    assert "Наличные у курьеров\n🛵 User301: 129 000 сум" in session.texts(OWNER)[-1]
 
 
 async def test_daily_report_once_per_business_day(env, store, demo, fake):

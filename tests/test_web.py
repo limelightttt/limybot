@@ -170,9 +170,9 @@ async def test_order_status_from_web_reaches_telegram(web, store, demo, fake):
         await client.post(f"/orders/{o.id}/status", data={"status": status})
     assert store.order(demo.id, o.id).status == "ready"
     to_customer = [m.text for m in session.sent if isinstance(m, SendMessage) and m.chat_id == CUSTOMER]
-    assert to_customer[-1].startswith("Заказ №1 готов! Ждём вас")
+    assert to_customer[-1].startswith("🔔 <b>Заказ №1 готов!</b>\nЖдём вас")
     card = [m for m in session.sent if isinstance(m, EditMessageText) and m.chat_id == OWNER][-1]
-    assert "Заказ №1 · Готов" in card.text  # the Telegram card follows changes made on the web
+    assert "Заказ №1</b> · Готов" in card.text  # the Telegram card follows changes made on the web
     r = await client.post(f"/orders/{o.id}/status", data={"status": "accepted"})
     assert "msg=" in r.headers["location"]  # stale
     await client.post(f"/orders/{o.id}/status", data={"status": "done"})
@@ -191,7 +191,7 @@ async def test_transfer_confirmed_from_web(web, store, demo, fake):
     assert "💳 Оплата получена" in (await client.get("/orders")).text
     await client.post(f"/orders/{o.id}/paid")
     assert store.order(demo.id, o.id).payment_status == "paid"
-    assert "Оплачен" in [m for m in session.sent if isinstance(m, EditMessageText)][-1].text
+    assert "✅ оплачен" in [m for m in session.sent if isinstance(m, EditMessageText)][-1].text
     assert "msg=" in (await client.post(f"/orders/{o.id}/paid")).headers["location"]
 
 

@@ -26,7 +26,7 @@ from aiogram.types import (
 from . import i18n
 from .config import Settings
 from .i18n import t
-from .models import ACTIVE, HANDED_OVER, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
+from .models import ACTIVE, HANDED_OVER, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -69,21 +69,59 @@ def customer_lang(store: Store, cafe_id: int, user: User | int) -> str:
 
 
 # --- orders: shared with the web admin and the Mini App ---
+ICON = {
+    "new": "🆕",
+    "accepted": "✅",
+    "cooking": "👨‍🍳",
+    "ready": "🔔",
+    "done": "📦",
+    "courier": "🛵",
+    "delivered": "🏁",
+    "cancelled": "❌",
+}
+PAY_ICON = {"pending": "⏳", "claimed": "🧾", "paid": "✅"}
+
+
+def lines_block(cafe: Cafe, o: Order) -> str:
+    """The order's lines as a quote, so they stand apart from the rest of the card (HTML)."""
+    rows = [
+        f"{escape(title(ln['name'], ln['options']))} × {ln['qty']} — {cafe.money(ln['unit'] * ln['qty'])}"
+        for ln in o.lines
+    ]
+    return "<blockquote>" + "\n".join(rows) + "</blockquote>"
+
+
+def money_lines(cafe: Cafe, o: Order) -> str:
+    fee = f"Доставка: {cafe.money(o.delivery_fee)}\n" if o.delivery_fee else ""
+    if o.payment_method == "cash":
+        pay = "💵 Наличными" + (f" · {change_text(cafe, o)}" if o.change_from else "")
+    else:
+        pay = f"💳 Перевод · {PAY_ICON[o.payment_status]} {PAYMENT_STATUSES[o.payment_status].lower()}"
+    return f"{fee}<b>Итого: {cafe.money(o.total)}</b>\n{pay}"
+
+
+def change_text(cafe: Cafe, o: Order) -> str:
+    return f"сдача с {cafe.money(o.change_from)} → дать {cafe.money(o.change_from - o.total)}"
+
+
+def who(o: Order) -> str:
+    return f"👤 {escape(o.customer)} · <code>{escape(o.phone)}</code>" + (
+        f"\n💬 <i>{escape(o.comment)}</i>" if o.comment else ""
+    )
+
+
+# --- orders: shared with the web admin and the Mini App; all cards are HTML ---
 def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
-    where = f"🛵 Доставка: {o.address}" if o.method == "delivery" else "🏃 Самовывоз"
-    fee = f"\nДоставка: {cafe.money(o.delivery_fee)}" if o.delivery_fee else ""
-    payment = f"{PAYMENT_METHODS[o.payment_method]} · {PAYMENT_STATUSES[o.payment_status]}"
+    where = f"🛵 <b>Доставка</b>\n📍 {escape(o.address)}" if o.method == "delivery" else "🏃 <b>Самовывоз</b>"
     text = (
-        f"Заказ №{o.number} · {STATUSES[o.status]}\n\n{o.lines_text(cafe)}{fee}\nИтого: {cafe.money(o.total)}\n"
-        f"💳 {payment}\n\n{where}\n👤 {o.customer}, {o.phone}"
-        + (f"\n💬 {o.comment}" if o.comment else "")
-        + (f"\n🛵 Везёт: {o.courier_name}" if o.courier_name else "")
-        + (f"\n💵 {change_text(cafe, o)}" if o.change_from else "")
+        f"{ICON[o.status]} <b>Заказ №{o.number}</b> · {STATUSES[o.status]}\n{where}\n\n"
+        f"{lines_block(cafe, o)}\n{money_lines(cafe, o)}\n\n{who(o)}"
+        + (f"\n🛵 Везёт: <b>{escape(o.courier_name)}</b>" if o.courier_name else "")
     )
     steps = o.next_statuses
     if o.status == "courier" and cafe.courier_chat_id:  # the courier marks it at the door, not the kitchen
         steps = []
-        text += "\n\n⏳ Ждём отметку курьера"
+        text += "\n\n⏳ <i>Ждём отметку курьера</i>"
     actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in steps]
     # with a finance group the money is checked there, by whoever sees the bank
     checks = o.awaits_transfer and not cafe.finance_chat_id
@@ -91,55 +129,49 @@ def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
     return text, kb([actions, paid])
 
 
-def change_text(cafe: Cafe, o: Order) -> str:
-    return f"Сдача с {cafe.money(o.change_from)} → дать {cafe.money(o.change_from - o.total)}"
-
-
 def finance_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
     """A card transfer to check against the bank, in the finance group."""
     text = (
-        f"💳 Перевод по заказу №{o.number} · {cafe.money(o.total)}\n👤 {o.customer}, {o.phone}\n"
-        f"{PAYMENT_STATUSES[o.payment_status]}" + ("" if o.status != "cancelled" else " · заказ отменён")
+        f"💳 <b>Перевод · заказ №{o.number}</b>\n<b>{cafe.money(o.total)}</b> на карту {escape(cafe.card_number)}\n"
+        f"{who(o)}\n{PAY_ICON[o.payment_status]} {PAYMENT_STATUSES[o.payment_status]}"
+        + (" · <i>заказ отменён</i>" if o.status == "cancelled" else "")
     )
     return text, kb([[button("💳 Оплата получена", f"pay:{o.id}", "success")]] if o.awaits_transfer else [])
 
 
 def receipt(cafe: Cafe, o: Order, cancelled_by: str = "кафе") -> str:
-    """One line per closed order in the finance group: its history, searchable in Telegram."""
+    """One line per closed order in the finance group: its history, searchable in Telegram (HTML)."""
     when = o.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m %H:%M")
     if o.status == "cancelled":
-        return f"❌ №{o.number} · {when} · {cafe.money(o.total)} · отменён {cancelled_by}"
+        return f"❌ <b>№{o.number}</b> · {when} · <s>{cafe.money(o.total)}</s> · отменён {cancelled_by}"
     how = "доставка" if o.method == "delivery" else "самовывоз"
     if o.payment_method == "transfer":
-        paid = "перевод, подтверждён" if o.payment_status == "paid" else "перевод, НЕ подтверждён"
+        paid = "💳 перевод, подтверждён" if o.payment_status == "paid" else "⚠️ перевод, НЕ подтверждён"
     elif o.courier_name:
-        paid = f"наличные, получил курьер {o.courier_name}"
+        paid = f"💵 наличные, получил курьер {escape(o.courier_name)}"
     else:
-        paid = "наличные, " + ("получил курьер" if o.method == "delivery" else "на кассе")
-    return f"🧾 №{o.number} · {when} · {cafe.money(o.total)} · {how} · {paid}"
+        paid = "💵 наличные, " + ("получил курьер" if o.method == "delivery" else "на кассе")
+    return f"🧾 <b>№{o.number}</b> · {when} · <b>{cafe.money(o.total)}</b> · {how} · {paid}"
 
 
 async def to_finance(bot: Bot, cafe: Cafe, text: str) -> None:
     if cafe.finance_chat_id:
         with suppress(TelegramBadRequest, TelegramForbiddenError):
-            await bot.send_message(cafe.finance_chat_id, text)
+            await bot.send_message(cafe.finance_chat_id, text, parse_mode="HTML")
 
 
 def courier_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
     """What the couriers' group sees: where to go, whom to call, what to collect. "Беру" first, then "Доставлен"."""
     if o.payment_status == "paid":
-        collect = "Оплачено"
+        collect = "✅ Оплачено, деньги не брать"
     elif o.payment_method == "transfer":
-        collect = f"Перевод на карту, {PAYMENT_STATUSES[o.payment_status].lower()}: проверьте у кафе"
+        collect = "💳 Перевод ещё не подтверждён — уточните у кафе перед выдачей"
     else:
-        collect = f"Получить с клиента: {cafe.money(o.total)}"
-        if o.change_from:
-            collect += f"\n💵 {change_text(cafe, o)}"
+        collect = f"💵 Получить <b>{cafe.money(o.total)}</b>" + (f"\n{change_text(cafe, o)}" if o.change_from else "")
     text = (
-        f"🛵 Доставка №{o.number} · {STATUSES[o.status]}\n\n📍 {o.address}\n👤 {o.customer}, {o.phone}"
-        + (f"\n💬 {o.comment}" if o.comment else "")
-        + f"\n\n{o.lines_text(cafe)}\n💳 {collect}"
-        + (f"\n\nВезёт: {o.courier_name}" if o.courier_name else "")
+        f"{ICON[o.status]} <b>Доставка №{o.number}</b> · {STATUSES[o.status]}\n📍 <b>{escape(o.address)}</b>\n"
+        f"{who(o)}\n\n{lines_block(cafe, o)}\n{collect}"
+        + (f"\n\n🛵 Везёт: <b>{escape(o.courier_name)}</b>" if o.courier_name else "")
     )
     if o.status != "courier":
         return text, None
@@ -152,7 +184,7 @@ async def post(bot: Bot, store: Store, cafe: Cafe, o: Order, chats: list[int], c
     text, markup = card(cafe, o)
     for chat in chats:
         try:
-            msg = await bot.send_message(chat, text, reply_markup=markup)
+            msg = await bot.send_message(chat, text, parse_mode="HTML", reply_markup=markup)
         except (TelegramBadRequest, TelegramForbiddenError) as e:
             log.warning("%s: cannot deliver order %s to chat %s: %s", cafe.slug, o.number, chat, e)
             continue
@@ -173,7 +205,9 @@ async def refresh_staff(bot: Bot, store: Store, cafe: Cafe, o: Order, note: str 
         card = {cafe.courier_chat_id: courier_card, cafe.finance_chat_id: finance_card}.get(chat_id, staff_card)
         text, markup = card(cafe, o)
         with suppress(TelegramBadRequest):  # card deleted in the chat
-            await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
+            await bot.edit_message_text(
+                text, chat_id=chat_id, message_id=message_id, parse_mode="HTML", reply_markup=markup
+            )
         if note and not is_courier:
             with suppress(TelegramBadRequest, TelegramForbiddenError):
                 reply = ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
@@ -222,7 +256,8 @@ async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) 
     if key in i18n.BOT_TEXTS["ru"]:
         lang = customer_lang(store, cafe.id, o.user_id)
         with suppress(TelegramForbiddenError, TelegramBadRequest):
-            await bot.send_message(o.user_id, t(lang, key, number=o.number, address=cafe.pickup_address))
+            text = t(lang, key, number=o.number, address=escape(cafe.pickup_address))
+            await bot.send_message(o.user_id, text, parse_mode="HTML")
     return True
 
 
@@ -234,7 +269,7 @@ async def mark_paid(bot: Bot, store: Store, cafe: Cafe, order_id: int) -> bool:
     await refresh_staff(bot, store, cafe, o)
     lang = customer_lang(store, cafe.id, o.user_id)
     with suppress(TelegramForbiddenError, TelegramBadRequest):
-        await bot.send_message(o.user_id, t(lang, "payment_received", number=o.number))
+        await bot.send_message(o.user_id, t(lang, "payment_received", number=o.number), parse_mode="HTML")
     return True
 
 
@@ -245,34 +280,36 @@ async def close_stale(bot: Bot, store: Store, cafe: Cafe, hours: int) -> None:
 
 
 def report(cafe: Cafe, orders: list[Order], title: str, since: datetime, until: datetime) -> str:
-    """Money for a period: what came in and how, what is still to check, what cash each courier carries."""
+    """Money for a period (HTML): what came in and how, what is still to check, what cash each courier carries."""
     tz = cafe.now().tzinfo
-    head = f"📊 Отчёт «{cafe.name}» · {title}\n{since.astimezone(tz):%d.%m %H:%M} — {until.astimezone(tz):%d.%m %H:%M}"
     done = [o for o in orders if o.status != "cancelled"]
     cancelled = [o for o in orders if o.status == "cancelled"]
     cash = [o for o in done if o.payment_method == "cash"]
     transfers = [o for o in done if o.payment_method == "transfer"]
     unconfirmed = [o for o in transfers if o.payment_status != "paid"]
+    total = lambda os: cafe.money(sum(o.total for o in os))
     lines = [
-        head,
+        f"📊 <b>Отчёт · {escape(cafe.name)}</b> · {title}",
+        f"<i>{since.astimezone(tz):%d.%m %H:%M} — {until.astimezone(tz):%d.%m %H:%M}</i>",
         "",
-        f"Заказов: {len(done)} на {cafe.money(sum(o.total for o in done))}",
-        f"Наличные: {cafe.money(sum(o.total for o in cash))}",
-        f"Переводы: {cafe.money(sum(o.total for o in transfers if o.payment_status == 'paid'))} подтверждено",
+        f"Заказов: <b>{len(done)}</b> на <b>{total(done)}</b>",
+        f"💵 Наличные: {total(cash)}",
+        f"💳 Переводы: {total([o for o in transfers if o.payment_status == 'paid'])} подтверждено",
     ]
     if unconfirmed:
         numbers = ", ".join(f"№{o.number}" for o in unconfirmed)
-        lines.append(f"⚠️ Не подтверждены: {numbers} — {cafe.money(sum(o.total for o in unconfirmed))}")
+        lines.append(f"⚠️ Не подтверждены: {numbers} — <b>{total(unconfirmed)}</b>")
     if cancelled:
-        lines.append(f"Отменено: {len(cancelled)} на {cafe.money(sum(o.total for o in cancelled))}")
+        lines.append(f"❌ Отменено: {len(cancelled)} на {total(cancelled)}")
     by_courier: dict[str, int] = {}
     for o in cash:
         if o.courier_name and o.status == "delivered":
             by_courier[o.courier_name] = by_courier.get(o.courier_name, 0) + o.total
     if by_courier:
-        lines += ["", "Наличные у курьеров:"] + [f"  {name}: {cafe.money(s)}" for name, s in by_courier.items()]
+        lines += ["", "<b>Наличные у курьеров</b>"]
+        lines += [f"🛵 {escape(name)}: {cafe.money(s)}" for name, s in by_courier.items()]
     if active := [o for o in done if o.status in ACTIVE]:
-        lines.append(f"\nЕщё не закрыты: {', '.join(f'№{o.number}' for o in active)}")
+        lines.append(f"\n⏳ Ещё не закрыты: {', '.join(f'№{o.number}' for o in active)}")
     return "\n".join(lines)
 
 
@@ -292,7 +329,7 @@ async def daily_report(bot: Bot, store: Store, cafe: Cafe) -> None:
     chats = [cafe.finance_chat_id] if cafe.finance_chat_id else [uid for uid, _ in store.admins(cafe.id)]
     for chat in chats:
         with suppress(TelegramBadRequest, TelegramForbiddenError):
-            await bot.send_message(chat, text)
+            await bot.send_message(chat, text, parse_mode="HTML")
     store.set_reported_until(cafe.id, ends)
 
 
@@ -514,7 +551,9 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             since, until, title = now - timedelta(hours=int(arg[:-1])), now, f"последние {arg[:-1]} ч"
         else:
             since, until, title = began, now, "сегодня"
-        await m.answer(report(cafe, store.orders_between(cafe.id, since, until), title, since, until))
+        await m.answer(
+            report(cafe, store.orders_between(cafe.id, since, until), title, since, until), parse_mode="HTML"
+        )
 
     # anything else typed in private (old keyboards, "hi") gets the greeting with the menu button
     @r.message(F.chat.type == "private", F.text)

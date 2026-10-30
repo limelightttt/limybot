@@ -50,6 +50,8 @@ class Template(BaseModel):
     hours: Hours | None = None
     pickup_address: str = ""
     delivery: Delivery = Field(default_factory=Delivery)
+    card_number: str = ""  # for payment by card transfer; empty: cash only
+    card_holder: str = ""
     modifiers: list[GroupIn] = []
     menu: list[CategoryIn] = []
 
@@ -78,6 +80,8 @@ def import_cafe(store: Store, slug: str, bot_token: str, template: Template) -> 
         delivery_enabled=t.delivery.enabled,
         delivery_min=t.delivery.min_order,
         delivery_fee=t.delivery.fee,
+        card_number=t.card_number,
+        card_holder=t.card_holder,
     )
     groups = {}
     for g in t.modifiers:

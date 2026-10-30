@@ -2,8 +2,10 @@
 
 import hashlib
 import hmac
+import html
 import itertools
 import json
+import re
 import time
 from datetime import datetime
 from urllib.parse import urlencode
@@ -48,7 +50,8 @@ class FakeSession(BaseSession):
         ]
 
     def texts(self, chat: int | None = None) -> list[str]:
-        return [m.text for m in self.messages(chat)]
+        """What a person reads: HTML tags dropped."""
+        return [html.unescape(re.sub(r"<[^>]+>", "", m.text)) for m in self.messages(chat)]
 
 
 @pytest.fixture

@@ -153,13 +153,18 @@
         <div class="stepper small"><button type="button" data-ch="${i}:-1">−</button><span>${l.qty}</span>
         <button type="button" data-ch="${i}:1">+</button></div></li>`)
       .join("");
-    const seg = (name, value, label, disabled = false) =>
-      `<button type="button" data-${name}="${value}" class="${f[name === "pay" ? "payment" : "method"] === value ? "on" : ""}"
-        ${disabled ? "disabled" : ""}>${label}</button>`;
-    const methods = `<div class="seg">${seg("method", "pickup", T("pickup"))}
-        ${D.delivery.enabled ? seg("method", "delivery", T("delivery"), !deliveryOk) : ""}</div>
-      ${D.delivery.enabled && !deliveryOk ? `<p class="hint">${T("delivery_from", { min: money(D.delivery.min) })}</p>` : ""}
-      ${f.method === "pickup" && D.pickup_address ? `<p class="hint">📍 ${esc(D.pickup_address)}</p>` : ""}`;
+    // a choice as a tile: icon, title, hint, a check when picked; the picked one is filled with the brand colour
+    const tile = (attr, value, icon, label, hint, on, disabled = false) =>
+      `<button type="button" class="tile${on ? " on" : ""}" data-${attr}="${value}" ${disabled ? "disabled" : ""}>
+        <span class="tile-icon">${icon}</span><span class="tile-text"><b>${label}</b><small>${hint}</small></span>
+        <span class="tile-check">${on ? "✓" : ""}</span></button>`;
+    const methods = `<div class="tiles">
+        ${tile("method", "pickup", "🏃", T("pickup"), esc(D.pickup_address) || T("pickup_hint"), f.method === "pickup")}
+        ${D.delivery.enabled
+          ? tile("method", "delivery", "🛵", T("delivery"),
+              deliveryOk ? (D.delivery.fee ? "+" + money(D.delivery.fee) : T("delivery_hint")) : T("delivery_from", { min: money(D.delivery.min) }),
+              f.method === "delivery", !deliveryOk)
+          : ""}</div>`;
     const address = f.method === "delivery"
       ? `<label>${T("address")}<textarea name="address" rows="2" placeholder="${T("address_hint")}">${esc(f.address)}</textarea></label>`
       : "";
@@ -174,9 +179,10 @@
           <input name="change_from" type="number" inputmode="numeric" min="0" step="1000" placeholder="${T("other_amount")}"
             value="${f.change_from && !bills.includes(+f.change_from) ? esc(f.change_from) : ""}"></div>`
       : "";
-    const payment = D.payments.length > 1
-      ? `<div class="field"><span>${T("payment")}</span><div class="seg">${D.payments.map((p) => seg("pay", p, T(p))).join("")}</div></div>`
-      : "";
+    const payment = `<div class="tiles">
+        ${tile("pay", "cash", "💵", T("cash"), T("cash_hint"), f.payment === "cash")}
+        ${D.payments.includes("transfer") ? tile("pay", "transfer", "💳", T("transfer"), T("transfer_hint"), f.payment === "transfer") : ""}
+        ${tile("pay", "online", "⚡️", T("online"), T("soon"), false, true)}</div>`;
     $("#view").innerHTML = `<div class="page">
         <button type="button" class="back" data-go="menu">← ${T("back")}</button>
         <div class="row"><h2>${T("your_order")}</h2><button type="button" class="link" data-clear>${T("clear")}</button></div>
@@ -185,7 +191,7 @@
         <label>${T("phone")}<input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(f.phone)}" placeholder="+998 90 123 45 67"></label>
         ${share}
         <label>${T("comment")}<input name="comment" maxlength="300" value="${esc(f.comment)}" placeholder="${T("comment_hint")}"></label>
-        ${payment}${change}
+        <h2>${T("payment")}</h2>${payment}${change}
         <ul class="summary"><li><span>${T("subtotal")}</span><span>${money(sub)}</span></li>
           ${fee ? `<li><span>${T("delivery_fee")}</span><span>${money(fee)}</span></li>` : ""}
           <li class="total"><span>${T("total")}</span><span>${money(sub + fee)}</span></li></ul>

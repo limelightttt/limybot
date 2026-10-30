@@ -6,6 +6,8 @@
   "hours": {"open": "07:00", "close": "23:59"},
   "pickup_address": "Ташкент, ул. Примерная, 1",
   "delivery": {"enabled": true, "min_order": 50000, "fee": 15000},
+  "card_number": "8600 0000 0000 0000",
+  "card_holder": "Demo Coffee",
   "modifiers": [
     {"name": "Размер", "options": [
       {"name": "S"}, {"name": "M", "price": 4000}, {"name": "L", "price": 8000}
