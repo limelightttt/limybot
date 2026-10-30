@@ -296,3 +296,17 @@ async def test_daily_backup_keeps_two_weeks(store, demo, settings, monkeypatch):
         "limybot-2026-10-04.zip",
         "limybot-2026-10-05.zip",
     ]
+
+
+def test_business_day(store, demo):
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Asia/Tashkent")
+    store.update_cafe(demo.id, open_time=time(18), close_time=time(2))  # a night cafe is one day, not two
+    c = store.cafe(demo.id)
+    began = c.day_began(datetime(2026, 1, 2, 1, 30, tzinfo=tz))
+    assert began == datetime(2026, 1, 1, 18, tzinfo=tz) and c.day_ends(began) == datetime(2026, 1, 2, 2, tzinfo=tz)
+    store.update_cafe(demo.id, open_time=None, close_time=None, day_start=5)  # around the clock: from 05:00
+    c = store.cafe(demo.id)
+    began = c.day_began(datetime(2026, 1, 2, 4, tzinfo=tz))
+    assert began == datetime(2026, 1, 1, 5, tzinfo=tz) and c.day_ends(began) == datetime(2026, 1, 2, 5, tzinfo=tz)

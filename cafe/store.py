@@ -19,7 +19,8 @@ create table cafes (
   delivery_min integer not null default 0, delivery_fee integer not null default 0,
   staff_chat_id integer, invite_code text, brand_color text not null default '#8b5e3c', logo text, cover text,
   card_number text not null default '', card_holder text not null default '', paid_until text,
-  enabled integer not null default 1, courier_chat_id integer
+  enabled integer not null default 1, courier_chat_id integer, finance_chat_id integer,
+  day_start integer not null default 5, reported_until text
 );
 create table admins (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null,
@@ -53,7 +54,7 @@ create table orders (
   comment text, lines text not null, subtotal integer not null, delivery_fee integer not null,
   total integer not null, status text not null default 'new',
   payment_method text not null default 'cash', payment_status text not null default 'pending',
-  created_at text not null, courier_id integer, courier_name text, unique (cafe_id, number)
+  created_at text not null, courier_id integer, courier_name text, change_from integer, unique (cafe_id, number)
 );
 create table staff_messages (
   order_id integer not null references orders on delete cascade, chat_id integer not null,
@@ -100,6 +101,13 @@ MIGRATIONS = [
     alter table orders add column courier_name text;
     alter table cafes drop column payment_note;
     """,
+    # 3: the finance group (receipts, transfer screenshots, daily reports), the business day, cash change
+    """
+    alter table cafes add column finance_chat_id integer;
+    alter table cafes add column day_start integer not null default 5;
+    alter table cafes add column reported_until text;
+    alter table orders add column change_from integer;
+    """,
 ]
 
 CAFE_FIELDS = {
@@ -116,6 +124,7 @@ CAFE_FIELDS = {
     "brand_color",
     "card_number",
     "card_holder",
+    "day_start",
 }
 CAFE_IMAGES = {"logo", "cover"}
 LOGIN_TTL = 15 * 60
@@ -177,6 +186,7 @@ class Store:
             delivery_enabled=bool(d["delivery_enabled"]),
             paid_until=date.fromisoformat(d["paid_until"]) if d["paid_until"] else None,
             enabled=bool(d["enabled"]),
+            reported_until=datetime.fromisoformat(d["reported_until"]) if d["reported_until"] else None,
         )
         return Cafe(**d)
 
@@ -206,6 +216,14 @@ class Store:
     def set_staff_chat(self, cafe_id: int, chat_id: int | None) -> None:
         with self.db:
             self.db.execute("update cafes set staff_chat_id = ? where id = ?", (chat_id, cafe_id))
+
+    def set_finance_chat(self, cafe_id: int, chat_id: int | None) -> None:
+        with self.db:
+            self.db.execute("update cafes set finance_chat_id = ? where id = ?", (chat_id, cafe_id))
+
+    def set_reported_until(self, cafe_id: int, moment: datetime) -> None:
+        with self.db:
+            self.db.execute("update cafes set reported_until = ? where id = ?", (moment.isoformat(), cafe_id))
 
     def set_courier_chat(self, cafe_id: int, chat_id: int | None) -> None:
         with self.db:
@@ -557,6 +575,7 @@ class Store:
         comment: str | None,
         payment_method: str,
         lang: str,
+        change_from: int | None = None,
     ) -> Order:
         """Saves the order and remembers the phone, the delivery address and the language for next time."""
         snapshot = [
@@ -579,8 +598,8 @@ class Store:
             ).fetchone()[0]
             cur = self.db.execute(
                 "insert into orders (cafe_id, number, user_id, customer, phone, method, address, comment, lines,"
-                " subtotal, delivery_fee, total, payment_method, created_at)"
-                " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " subtotal, delivery_fee, total, payment_method, change_from, created_at)"
+                " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     cafe.id,
                     number,
@@ -595,6 +614,7 @@ class Store:
                     fee,
                     subtotal + fee,
                     payment_method,
+                    change_from if payment_method == "cash" else None,
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -660,6 +680,22 @@ class Store:
                 (user_id, name, order_id, cafe_id),
             )
         return cur.rowcount == 1
+
+    def orders_between(self, cafe_id: int, since: datetime, until: datetime) -> list[Order]:
+        rows = self.db.execute(
+            "select * from orders where cafe_id = ? and created_at >= ? and created_at < ? order by id",
+            (cafe_id, since.astimezone(UTC).isoformat(), until.astimezone(UTC).isoformat()),
+        )
+        return [self._order(r) for r in rows]
+
+    def claimed_transfer(self, cafe_id: int, user_id: int) -> Order | None:
+        """The order a customer's transfer screenshot belongs to: their latest claimed, unconfirmed transfer."""
+        row = self.db.execute(
+            "select * from orders where cafe_id = ? and user_id = ? and payment_method = 'transfer'"
+            " and payment_status = 'claimed' and status != 'cancelled' order by id desc limit 1",
+            (cafe_id, user_id),
+        )
+        return self._order(row.fetchone())
 
     def stale(self, cafe_id: int, before: datetime) -> list[Order]:
         """Ready or on the way since before: nobody closed them, the customer has them long ago."""

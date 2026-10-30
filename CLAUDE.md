@@ -13,7 +13,7 @@ cafe/
   runner.py     один процесс: Dispatcher на каждое кафе + uvicorn; каждые 15 с сверяет кафе с БД; кнопка «Меню»
                 и команды бота; раз в день бэкап
   bot.py        build(store, cafe_id, settings) -> Dispatcher: приветствие, «Мои заказы», отмена, «Я перевёл»,
-                кнопки персонала, /admin /staff /stats. Общие для бота, админки и Mini App: staff_card,
+                кнопки персонала и курьеров, /admin /staff /couriers /finance /report, отчёты. Общие для бота, админки и Mini App: staff_card,
                 send_to_staff, refresh_staff, send_to_customer, change_status, mark_paid
   store.py      весь SQL (sqlite3); SCHEMA — текущая схема, MIGRATIONS — шаги для старых баз; методы скоупятся по cafe_id
   models.py     dataclass'ы (Cafe, Item, CartLine, Order, Customer...), STATUSES/FLOW, PAYMENT_*
@@ -78,6 +78,15 @@ Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`.
   курьеров уходит `courier_card` («Беру» → `orders.courier_id/courier_name` → «Доставлен»); без группы курьеров
   «Доставлен» жмёт персонал. Карточки курьеров хранятся в той же `staff_messages`, `refresh_staff` рисует нужную.
   Заказы в `ready`/`courier` дольше `runner.AUTO_CLOSE_HOURS` (6 ч от создания) закрываются сами (`close_stale`).
+- **Финансы** — группа с `/finance` (`cafes.finance_chat_id`): строка-чек на каждый закрытый/отменённый заказ
+  (`receipt`: кто и как оплатил, какой курьер получил наличные), карточка перевода (`finance_card`) с «Оплата
+  получена» и скриншотом от гостя (фото в личке → `claimed_transfer` → copy_message). С группой финансов персонал
+  переводы не подтверждает (`checks_money`). Кухня заказ не ждёт: деньги проверяются параллельно.
+- **Рабочий день** (`Cafe.day_began/day_ends`): от открытия до закрытия (ночное кафе — один день), круглосуточное —
+  с `cafes.day_start` (час, по умолчанию 5). `/report` [yesterday|Nh] — в группе финансов или админу в личке;
+  в конце дня `daily_report` шлёт итог один раз (`cafes.reported_until`). Ручных смен /open /end нет: их забывают.
+- **Сдача:** `orders.change_from` — купюра гостя при наличных (Mini App: без сдачи / 50 / 100 / 200 тыс. / своя
+  сумма), видна персоналу, курьеру и гостю; меньше суммы заказа — ошибка `change`.
 - **Подписка:** `cafes.paid_until` (включительно) и `cafes.enabled` задаёт оператор через CLI; `Cafe.active()`.
   Неактивное кафе не принимает заказы (бот и Mini App), владелец видит баннер в админке.
 - **Профиль гостя** — таблица `customers` (cafe_id, user_id): телефон, последний адрес доставки, язык. Пишется при

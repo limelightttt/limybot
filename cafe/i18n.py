@@ -51,7 +51,9 @@ BOT_TEXTS = {
         "pay_cash": "💳 Оплата при получении",
         "pay_transfer": "💳 Перевод на карту",
         "transfer_howto": "Переведите {total} на карту <code>{card}</code> ({holder}) и нажмите «Я перевёл».",
-        "transfer_claimed": "Ждём, пока кафе увидит перевод.",
+        "transfer_claimed": "Пришлите сюда скриншот перевода — так кафе быстрее его найдёт.",
+        "screenshot_ok": "Спасибо! Скриншот передан кафе.",
+        "change": "сдача с {amount}",
         "payment_received": "Оплата по заказу №{number} получена ✅ Спасибо!",
         "we_will_write": "Мы напишем, когда заказ примут.",
         "status_line": "Статус: {status}",
@@ -92,7 +94,9 @@ BOT_TEXTS = {
         "pay_cash": "💳 Qabul qilganda toʻlov",
         "pay_transfer": "💳 Kartaga oʻtkazma",
         "transfer_howto": "{total} ni <code>{card}</code> kartaga ({holder}) oʻtkazing va «Oʻtkazdim» tugmasini bosing.",
-        "transfer_claimed": "Kafe oʻtkazmani tekshirmoqda.",
+        "transfer_claimed": "Oʻtkazma skrinshotini shu yerga yuboring — kafe uni tezroq topadi.",
+        "screenshot_ok": "Rahmat! Skrinshot kafega yuborildi.",
+        "change": "{amount} dan qaytim",
         "payment_received": "№{number} buyurtma uchun toʻlov qabul qilindi ✅ Rahmat!",
         "we_will_write": "Buyurtma qabul qilinganda xabar beramiz.",
         "status_line": "Holati: {status}",
@@ -138,6 +142,9 @@ APP_TEXTS = {
         "comment_hint": "Например, без сахара",
         "payment": "Оплата",
         "cash": "При получении",
+        "change_from": "Сдача с купюры",
+        "no_change": "Без сдачи",
+        "other_amount": "Другая сумма",
         "transfer": "Перевод на карту",
         "subtotal": "Сумма",
         "delivery_fee": "Доставка",
@@ -162,6 +169,7 @@ APP_TEXTS = {
         "error_address": "Укажите адрес доставки",
         "error_phone": "Укажите номер телефона",
         "error_payment": "Этот способ оплаты недоступен",
+        "error_change": "Сумма для сдачи меньше заказа",
         "error_unavailable": "Кафе временно недоступно, попробуйте через минуту",
         "error_network": "Нет связи, попробуйте ещё раз",
     },
@@ -185,6 +193,9 @@ APP_TEXTS = {
         "comment_hint": "Masalan, shakarsiz",
         "payment": "Toʻlov",
         "cash": "Qabul qilganda",
+        "change_from": "Qaysi kupyuradan qaytim",
+        "no_change": "Qaytimsiz",
+        "other_amount": "Boshqa summa",
         "transfer": "Kartaga oʻtkazma",
         "subtotal": "Summa",
         "delivery_fee": "Yetkazib berish",
@@ -209,6 +220,7 @@ APP_TEXTS = {
         "error_address": "Yetkazib berish manzilini kiriting",
         "error_phone": "Telefon raqamini kiriting",
         "error_payment": "Bu toʻlov usuli mavjud emas",
+        "error_change": "Qaytim uchun summa buyurtmadan kam",
         "error_unavailable": "Kafe vaqtincha mavjud emas, bir daqiqadan soʻng urinib koʻring",
         "error_network": "Aloqa yoʻq, qayta urinib koʻring",
     },
@@ -243,5 +255,8 @@ def order_text(cafe: Cafe, o: Order, lang: str) -> str:
     else:
         where = t(lang, "pickup", address=escape(cafe.pickup_address))
     extra = [where, f"📱 {escape(o.phone)}"] + ([t(lang, "comment", comment=escape(o.comment))] if o.comment else [])
-    extra.append(t(lang, "pay_transfer" if o.payment_method == "transfer" else "pay_cash"))
+    pay = t(lang, "pay_transfer" if o.payment_method == "transfer" else "pay_cash")
+    if o.change_from:
+        pay += " · " + t(lang, "change", amount=money(cafe, o.change_from, lang))
+    extra.append(pay)
     return "\n".join(lines) + "\n\n" + "\n".join(extra)

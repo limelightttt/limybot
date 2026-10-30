@@ -195,8 +195,10 @@ async def test_owner_commands(env, store, demo):
     assert store.cafe(demo.id).staff_chat_id == GROUP
     await place()
     assert "Заказ №1 · Новый" in session.texts(GROUP)[-1]  # orders now go to the staff group
-    await feed(message(OWNER, "/stats"))
-    assert session.texts(OWNER)[-1] == "Сегодня: 1 заказов на 18 000 сум"
+    await feed(message(OWNER, "/report"))
+    assert "Заказов: 1 на 18 000 сум" in session.texts(OWNER)[-1]
+    await feed(message(CUSTOMER, "/report"))  # not an admin: no money for them
+    assert "Отчёт" not in session.texts(CUSTOMER)[-1]
     await feed(message(CUSTOMER, "/privacy"))
     assert session.texts(CUSTOMER)[-1].startswith("Что мы храним")
 
@@ -294,3 +296,80 @@ async def test_no_https_no_menu_button_and_no_tech_text(store, demo, settings):
     await build(store, demo.id, settings).feed_update(Bot("1:demo", session=session), message(CUSTOMER, "/start"))
     greeting = session.messages(CUSTOMER)[-1]
     assert greeting.text == demo.greeting and not any(b.web_app for b in buttons(greeting))
+
+
+async def test_finance_group_gets_receipts_and_checks_transfers(env, store, demo, fake):
+    from aiogram.methods import CopyMessage
+    from aiogram.types import PhotoSize
+
+    feed, place, session = env
+    finance, staff = Chat(id=-900, type="supergroup"), Chat(id=GROUP, type="supergroup")
+    store.set_staff_chat(demo.id, GROUP)
+    store.update_cafe(demo.id, card_number="8600 1234 5678 9012", card_holder="Ali")
+    await feed(message(OWNER, "/finance", chat=finance))
+    assert store.cafe(demo.id).finance_chat_id == -900
+
+    o = await place(payment_method="transfer")
+    assert "Оплата получена" not in str(session.messages(GROUP)[-1].reply_markup)  # money is checked in finance
+    await feed(tap(CUSTOMER, f"paid:{o.id}"))
+    card = session.messages(-900)[-1]
+    assert "💳 Перевод по заказу №1 · 18 000 сум" in card.text and buttons(card)[0].callback_data == f"pay:{o.id}"
+    assert "скриншот" in session.texts(CUSTOMER)[-1]
+
+    photo = message(CUSTOMER)
+    photo.message.__dict__["photo"] = [PhotoSize(file_id="p", file_unique_id="u", width=1, height=1)]
+    await feed(photo)
+    copied = [m for m in session.sent if isinstance(m, CopyMessage)][-1]
+    assert copied.chat_id == -900 and "Скриншот перевода по заказу №1" in copied.caption
+    assert session.texts(CUSTOMER)[-1] == "Спасибо! Скриншот передан кафе."
+
+    await feed(tap(555, f"pay:{o.id}", chat=staff))  # baristas do not confirm money once finance exists
+    assert store.order(demo.id, o.id).payment_status == "claimed"
+    await feed(tap(901, f"pay:{o.id}", chat=finance))
+    assert store.order(demo.id, o.id).payment_status == "paid"
+
+    for status in ("accepted", "cooking", "ready", "done"):
+        await feed(tap(OWNER, f"st:{o.id}:{status}"))
+    assert session.texts(-900)[-1].endswith("18 000 сум · самовывоз · перевод, подтверждён")
+    cancelled = await place()
+    await feed(tap(CUSTOMER, f"oc:{cancelled.id}"))
+    assert session.texts(-900)[-1].endswith("отменён клиентом")
+
+    await feed(message(901, "/report", chat=finance))
+    report = session.texts(-900)[-1]
+    assert "Заказов: 1 на 18 000 сум" in report and "Переводы: 18 000 сум подтверждено" in report
+    assert "Отменено: 1" in report
+
+
+async def test_cash_change_and_courier_cash_in_report(env, store, demo):
+    feed, place, session = env
+    couriers = Chat(id=-700, type="supergroup")
+    await feed(message(OWNER, "/couriers", chat=couriers))
+    o = await place(
+        picks=[pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)], method="delivery", address="A", change_from=200000
+    )
+    assert "💵 Сдача с 200 000 сум → дать 71 000 сум" in session.texts(OWNER)[-1]
+    assert "сдача с 200 000 сум" in session.texts(CUSTOMER)[-1]
+    for status in ("accepted", "cooking", "courier"):
+        await feed(tap(OWNER, f"st:{o.id}:{status}"))
+    assert "Сдача с 200 000 сум → дать 71 000 сум" in session.texts(-700)[-1]
+    await feed(tap(301, f"take:{o.id}", chat=couriers))
+    await feed(tap(301, f"dlv:{o.id}", chat=couriers))
+    await feed(message(OWNER, "/report"))
+    assert "Наличные у курьеров:\n  User301: 129 000 сум" in session.texts(OWNER)[-1]
+
+
+async def test_daily_report_once_per_business_day(env, store, demo, fake):
+    from datetime import timedelta
+
+    from cafe.bot import daily_report
+
+    *_, session = env
+    bot, _ = fake
+    await daily_report(bot, store, store.cafe(demo.id))  # a new cafe: nothing about the past
+    assert not [t for t in session.texts(OWNER) if t.startswith("📊")]
+    store.set_reported_until(demo.id, store.cafe(demo.id).reported_until - timedelta(days=1))
+    for _ in range(2):
+        await daily_report(bot, store, store.cafe(demo.id))
+    reports = [t for t in session.texts(OWNER) if t.startswith("📊")]
+    assert len(reports) == 1 and "рабочий день" in reports[0]  # no finance group: admins get it

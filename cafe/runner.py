@@ -18,7 +18,7 @@ from aiogram.exceptions import (
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
 from .backup import make_backup
-from .bot import app_url, build, close_stale
+from .bot import app_url, build, close_stale, daily_report
 from .config import Settings
 from .i18n import LANGS
 from .store import Store
@@ -117,6 +117,7 @@ class Runner:
         for cafe_id, r in list(self.running.items()):
             if cafe := self.store.cafe(cafe_id):
                 await close_stale(r.bot, self.store, cafe, AUTO_CLOSE_HOURS)
+                await daily_report(r.bot, self.store, cafe)
 
     async def stop(self, cafe_id: int) -> None:
         r = self.running.pop(cafe_id)

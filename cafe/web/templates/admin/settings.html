@@ -12,6 +12,8 @@
         <span>—</span>
         <input type="time" name="close_time" value="{{ cafe.close_time.strftime('%H:%M') if cafe.close_time else '' }}" aria-label="Закрытие">
       </div>
+      <label>Круглосуточно: рабочий день (и отчёт) начинается в
+        <input type="number" name="day_start" min="0" max="23" value="{{ cafe.day_start }}" inputmode="numeric" class="price"> ч</label>
     </fieldset>
     <label>Адрес самовывоза <input name="pickup_address" value="{{ cafe.pickup_address }}"></label>
     <fieldset>
@@ -70,6 +72,16 @@
   {% else %}
   <p>Сейчас «Доставлен» отмечает персонал. Если у вас свои курьеры — создайте группу «Курьеры», добавьте туда бота
      и курьеров, отправьте в группе <code>/couriers</code>.</p>
+  {% endif %}
+  <h3>Финансы {% if cafe.finance_chat_id %}<span class="badge">группа подключена</span>{% endif %}</h3>
+  {% if cafe.finance_chat_id %}
+  <p>В группу финансов приходят закрытые заказы (кто и как оплатил, кто из курьеров получил наличные), переводы со
+     скриншотами и кнопкой «Оплата получена», а в конце рабочего дня — отчёт. <code>/report</code> в группе — отчёт
+     за сегодня, <code>/report yesterday</code> — за вчера, <code>/report 12h</code> — за последние 12 часов.</p>
+  {% else %}
+  <p>Чтобы видеть деньги отдельно от потока заказов, создайте группу «Финансы» для себя и бухгалтера, добавьте бота
+     и отправьте там <code>/finance</code>. Пока её нет, переводы подтверждает персонал, отчёт за день приходит
+     администраторам, а <code>/report</code> работает в личке с ботом.</p>
   {% endif %}
   <p class="muted">Заказы, которые 6 часов висят в «Готов» или «Передан курьеру», закрываются сами.</p>
 </section>

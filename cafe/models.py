@@ -1,7 +1,7 @@
 """Plain data the store returns and the bot, the Mini App and the web admin render."""
 
 from dataclasses import dataclass, field
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 STATUSES = {
@@ -58,12 +58,27 @@ class Cafe:
     paid_until: date | None  # set by the operator: python -m cafe paid <name> <date>
     enabled: bool
     courier_chat_id: int | None  # the couriers' group: they take orders on their way and mark them delivered
+    finance_chat_id: int | None  # the owner's money group: receipts, transfer screenshots, daily reports
+    day_start: int  # hour a 24/7 cafe's business day starts; with opening hours the day starts at opening
+    reported_until: datetime | None  # end of the last business day whose report went out
 
     def now(self) -> datetime:
         return datetime.now(ZoneInfo(self.timezone))
 
-    def today(self) -> datetime:
-        return self.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    def day_began(self, now: datetime | None = None) -> datetime:
+        """Start of the business day: opening time, or day_start for a cafe open around the clock. A night cafe
+        (18:00–02:00) is one day, not two."""
+        now = now or self.now()
+        start = self.open_time or time(self.day_start)
+        began = now.replace(hour=start.hour, minute=start.minute, second=0, microsecond=0)
+        return began if began <= now else began - timedelta(days=1)
+
+    def day_ends(self, began: datetime) -> datetime:
+        """Closing time of the business day that began then; the next day's start for a 24/7 cafe."""
+        if self.open_time is None or self.close_time is None:
+            return began + timedelta(days=1)
+        length = datetime.combine(began.date(), self.close_time) - datetime.combine(began.date(), self.open_time)
+        return began + (length if length > timedelta(0) else length + timedelta(days=1))
 
     def is_open(self, now: datetime | None = None) -> bool:
         o, c = self.open_time, self.close_time
@@ -184,6 +199,7 @@ class Order:
     created_at: datetime
     courier_id: int | None
     courier_name: str | None
+    change_from: int | None  # cash: the banknote the customer pays with, so the courier brings change
 
     @property
     def next_statuses(self) -> list[str]:

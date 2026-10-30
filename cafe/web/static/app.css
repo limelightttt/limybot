@@ -96,6 +96,9 @@ h1, h2, h3 { letter-spacing: -0.2px; }
 .seg button { flex: 1; padding: 10px; border-radius: 9px; font-weight: 500; }
 .seg button.on { background: var(--bg); box-shadow: 0 1px 4px rgb(0 0 0 / 0.12); font-weight: 600; }
 .seg button:disabled { opacity: 0.4; }
+.seg.wrap { flex-wrap: wrap; }
+.seg.wrap button { flex: 1 0 30%; }
+.seg + input { margin-top: 8px; }
 label, .field { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; font-size: 13px; color: var(--muted); }
 input, textarea { padding: 12px; border: 1.5px solid transparent; border-radius: 12px; outline: none;
   background: var(--surface); color: var(--text); font: inherit; font-size: 16px; resize: vertical; }

@@ -34,6 +34,7 @@ class OrderIn(BaseModel):
     address: str = Field("", max_length=200)
     comment: str = Field("", max_length=300)
     payment: Literal["cash", "transfer"]
+    change_from: int | None = Field(None, ge=0, le=100_000_000)  # cash: the banknote the courier needs change for
     lang: Literal["ru", "uz"]
 
 
@@ -167,6 +168,9 @@ def router(web: Web) -> APIRouter:
             return refuse("phone")
         if body.payment not in cafe.payment_methods():
             return refuse("payment")
+        fee = cafe.delivery_fee if body.method == "delivery" else 0
+        if body.payment == "cash" and body.change_from and body.change_from < sum(ln.sum for ln in lines) + fee:
+            return refuse("change")
         o = store.place(
             cafe,
             user.id,
@@ -178,6 +182,7 @@ def router(web: Web) -> APIRouter:
             comment=body.comment.strip() or None,
             payment_method=body.payment,
             lang=body.lang,
+            change_from=body.change_from or None,
         )
         await send_to_staff(bot, store, cafe, o)
         await send_to_customer(bot, store, cafe, o)

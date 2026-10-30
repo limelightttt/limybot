@@ -17,7 +17,7 @@ def router(web: Web) -> APIRouter:
     @r.get("/orders")
     async def orders(request: Request, admin: Admin, all: bool = False):
         cafe, _ = admin
-        n, total = store.stats(cafe.id, cafe.today())
+        n, total = store.stats(cafe.id, cafe.day_began())
         return web.page(
             request,
             "orders.html",

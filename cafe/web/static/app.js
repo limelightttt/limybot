@@ -14,7 +14,7 @@
     lang: user && user.language_code === "uz" ? "uz" : "ru",
     view: "menu", // menu | cart | done
     cart: loadCart(),
-    form: { method: "pickup", phone: "", address: "", comment: "", payment: D.payments[0] },
+    form: { method: "pickup", phone: "", address: "", comment: "", payment: D.payments[0], change_from: "" },
     sending: false,
     done: null,
   };
@@ -165,6 +165,15 @@
       : "";
     const share = tg && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9")
       ? `<button type="button" class="link" data-share>${T("share_phone")}</button>` : "";
+    // banknotes in circulation that are awkward to change; only those above the total make sense
+    const bills = [50000, 100000, 200000].filter((b) => b > sub + fee);
+    const change = f.payment === "cash"
+      ? `<div class="field"><span>${T("change_from")}</span><div class="seg wrap">
+          ${["", ...bills].map((b) => `<button type="button" data-change="${b}" class="${String(f.change_from) === String(b) ? "on" : ""}">
+            ${b ? money(b) : T("no_change")}</button>`).join("")}</div>
+          <input name="change_from" type="number" inputmode="numeric" min="0" step="1000" placeholder="${T("other_amount")}"
+            value="${f.change_from && !bills.includes(+f.change_from) ? esc(f.change_from) : ""}"></div>`
+      : "";
     const payment = D.payments.length > 1
       ? `<div class="field"><span>${T("payment")}</span><div class="seg">${D.payments.map((p) => seg("pay", p, T(p))).join("")}</div></div>`
       : "";
@@ -176,7 +185,7 @@
         <label>${T("phone")}<input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(f.phone)}" placeholder="+998 90 123 45 67"></label>
         ${share}
         <label>${T("comment")}<input name="comment" maxlength="300" value="${esc(f.comment)}" placeholder="${T("comment_hint")}"></label>
-        ${payment}
+        ${payment}${change}
         <ul class="summary"><li><span>${T("subtotal")}</span><span>${money(sub)}</span></li>
           ${fee ? `<li><span>${T("delivery_fee")}</span><span>${money(fee)}</span></li>` : ""}
           <li class="total"><span>${T("total")}</span><span>${money(sub + fee)}</span></li></ul>
@@ -250,6 +259,7 @@
         address: f.method === "delivery" ? f.address : "",
         comment: f.comment,
         payment: f.payment,
+        change_from: f.payment === "cash" && +f.change_from ? +f.change_from : null,
         lang: state.lang,
       });
       state.done = res;
@@ -325,6 +335,9 @@
       render();
     } else if ("pay" in d) {
       state.form.payment = d.pay;
+      render();
+    } else if ("change" in d) {
+      state.form.change_from = d.change;
       render();
     } else if ("share" in d) sharePhone();
     else if ("confirm" in d) submit();

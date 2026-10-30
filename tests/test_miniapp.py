@@ -114,6 +114,7 @@ async def test_checkout_rules(app, store, demo):
     assert await refused(body(cakes, method="delivery", address="  ")) == "address"
     assert await refused(body(espresso, phone="12")) == "phone"
     assert await refused(body(espresso, payment="transfer")) == "payment"  # no card in the settings
+    assert await refused(body(espresso, change_from=10000)) == "change"  # less than the order
     assert await refused(body(pick(store, demo.id, "Латте", ["обычное"]))) == "menu_changed"  # no size
     store.set_available(demo.id, espresso["item_id"], False)
     assert await refused(body(espresso)) == "menu_changed"

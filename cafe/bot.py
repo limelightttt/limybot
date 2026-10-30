@@ -26,7 +26,7 @@ from aiogram.types import (
 from . import i18n
 from .config import Settings
 from .i18n import t
-from .models import PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
+from .models import ACTIVE, HANDED_OVER, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -78,14 +78,51 @@ def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
         f"💳 {payment}\n\n{where}\n👤 {o.customer}, {o.phone}"
         + (f"\n💬 {o.comment}" if o.comment else "")
         + (f"\n🛵 Везёт: {o.courier_name}" if o.courier_name else "")
+        + (f"\n💵 {change_text(cafe, o)}" if o.change_from else "")
     )
     steps = o.next_statuses
     if o.status == "courier" and cafe.courier_chat_id:  # the courier marks it at the door, not the kitchen
         steps = []
         text += "\n\n⏳ Ждём отметку курьера"
     actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in steps]
-    paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
+    # with a finance group the money is checked there, by whoever sees the bank
+    checks = o.awaits_transfer and not cafe.finance_chat_id
+    paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if checks else []
     return text, kb([actions, paid])
+
+
+def change_text(cafe: Cafe, o: Order) -> str:
+    return f"Сдача с {cafe.money(o.change_from)} → дать {cafe.money(o.change_from - o.total)}"
+
+
+def finance_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
+    """A card transfer to check against the bank, in the finance group."""
+    text = (
+        f"💳 Перевод по заказу №{o.number} · {cafe.money(o.total)}\n👤 {o.customer}, {o.phone}\n"
+        f"{PAYMENT_STATUSES[o.payment_status]}" + ("" if o.status != "cancelled" else " · заказ отменён")
+    )
+    return text, kb([[button("💳 Оплата получена", f"pay:{o.id}", "success")]] if o.awaits_transfer else [])
+
+
+def receipt(cafe: Cafe, o: Order, cancelled_by: str = "кафе") -> str:
+    """One line per closed order in the finance group: its history, searchable in Telegram."""
+    when = o.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m %H:%M")
+    if o.status == "cancelled":
+        return f"❌ №{o.number} · {when} · {cafe.money(o.total)} · отменён {cancelled_by}"
+    how = "доставка" if o.method == "delivery" else "самовывоз"
+    if o.payment_method == "transfer":
+        paid = "перевод, подтверждён" if o.payment_status == "paid" else "перевод, НЕ подтверждён"
+    elif o.courier_name:
+        paid = f"наличные, получил курьер {o.courier_name}"
+    else:
+        paid = "наличные, " + ("получил курьер" if o.method == "delivery" else "на кассе")
+    return f"🧾 №{o.number} · {when} · {cafe.money(o.total)} · {how} · {paid}"
+
+
+async def to_finance(bot: Bot, cafe: Cafe, text: str) -> None:
+    if cafe.finance_chat_id:
+        with suppress(TelegramBadRequest, TelegramForbiddenError):
+            await bot.send_message(cafe.finance_chat_id, text)
 
 
 def courier_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -96,6 +133,8 @@ def courier_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None
         collect = f"Перевод на карту, {PAYMENT_STATUSES[o.payment_status].lower()}: проверьте у кафе"
     else:
         collect = f"Получить с клиента: {cafe.money(o.total)}"
+        if o.change_from:
+            collect += f"\n💵 {change_text(cafe, o)}"
     text = (
         f"🛵 Доставка №{o.number} · {STATUSES[o.status]}\n\n📍 {o.address}\n👤 {o.customer}, {o.phone}"
         + (f"\n💬 {o.comment}" if o.comment else "")
@@ -130,8 +169,9 @@ async def refresh_staff(bot: Bot, store: Store, cafe: Cafe, o: Order, note: str 
     """Redraw the order's cards in staff and courier chats. A note goes out as a reply to the staff card, so staff
     get a notification."""
     for chat_id, message_id in store.staff_messages(o.id):
-        is_courier = chat_id == cafe.courier_chat_id
-        text, markup = (courier_card if is_courier else staff_card)(cafe, o)
+        is_courier = chat_id in (cafe.courier_chat_id, cafe.finance_chat_id)
+        card = {cafe.courier_chat_id: courier_card, cafe.finance_chat_id: finance_card}.get(chat_id, staff_card)
+        text, markup = card(cafe, o)
         with suppress(TelegramBadRequest):  # card deleted in the chat
             await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
         if note and not is_courier:
@@ -176,6 +216,8 @@ async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) 
     await refresh_staff(bot, store, cafe, o)
     if new == "courier" and cafe.courier_chat_id:
         await post(bot, store, cafe, o, [cafe.courier_chat_id], courier_card)
+    if new in HANDED_OVER or new == "cancelled":
+        await to_finance(bot, cafe, receipt(cafe, o))
     key = f"status_{new}"  # nothing is sent when the order is handed over: the customer already has it
     if key in i18n.BOT_TEXTS["ru"]:
         lang = customer_lang(store, cafe.id, o.user_id)
@@ -200,6 +242,58 @@ async def close_stale(bot: Bot, store: Store, cafe: Cafe, hours: int) -> None:
     """Orders left ready or on the way for hours were handed over long ago: close them, so they leave the lists."""
     for o in store.stale(cafe.id, datetime.now(UTC) - timedelta(hours=hours)):
         await change_status(bot, store, cafe, o, o.next_statuses[0])
+
+
+def report(cafe: Cafe, orders: list[Order], title: str, since: datetime, until: datetime) -> str:
+    """Money for a period: what came in and how, what is still to check, what cash each courier carries."""
+    tz = cafe.now().tzinfo
+    head = f"📊 Отчёт «{cafe.name}» · {title}\n{since.astimezone(tz):%d.%m %H:%M} — {until.astimezone(tz):%d.%m %H:%M}"
+    done = [o for o in orders if o.status != "cancelled"]
+    cancelled = [o for o in orders if o.status == "cancelled"]
+    cash = [o for o in done if o.payment_method == "cash"]
+    transfers = [o for o in done if o.payment_method == "transfer"]
+    unconfirmed = [o for o in transfers if o.payment_status != "paid"]
+    lines = [
+        head,
+        "",
+        f"Заказов: {len(done)} на {cafe.money(sum(o.total for o in done))}",
+        f"Наличные: {cafe.money(sum(o.total for o in cash))}",
+        f"Переводы: {cafe.money(sum(o.total for o in transfers if o.payment_status == 'paid'))} подтверждено",
+    ]
+    if unconfirmed:
+        numbers = ", ".join(f"№{o.number}" for o in unconfirmed)
+        lines.append(f"⚠️ Не подтверждены: {numbers} — {cafe.money(sum(o.total for o in unconfirmed))}")
+    if cancelled:
+        lines.append(f"Отменено: {len(cancelled)} на {cafe.money(sum(o.total for o in cancelled))}")
+    by_courier: dict[str, int] = {}
+    for o in cash:
+        if o.courier_name and o.status == "delivered":
+            by_courier[o.courier_name] = by_courier.get(o.courier_name, 0) + o.total
+    if by_courier:
+        lines += ["", "Наличные у курьеров:"] + [f"  {name}: {cafe.money(s)}" for name, s in by_courier.items()]
+    if active := [o for o in done if o.status in ACTIVE]:
+        lines.append(f"\nЕщё не закрыты: {', '.join(f'№{o.number}' for o in active)}")
+    return "\n".join(lines)
+
+
+async def daily_report(bot: Bot, store: Store, cafe: Cafe) -> None:
+    """At the end of each business day the finance group (or the admins) gets its report, once."""
+    now = cafe.now()
+    began = cafe.day_began(now)
+    ends = cafe.day_ends(began)
+    if ends > now:  # this day is not over: the last finished one is yesterday's
+        began -= timedelta(days=1)
+        ends = cafe.day_ends(began)
+    if cafe.reported_until is None or cafe.reported_until >= ends:
+        if cafe.reported_until is None:  # a new cafe: start from the next day, do not report the past
+            store.set_reported_until(cafe.id, ends)
+        return
+    text = report(cafe, store.orders_between(cafe.id, began, ends), "рабочий день", began, ends)
+    chats = [cafe.finance_chat_id] if cafe.finance_chat_id else [uid for uid, _ in store.admins(cafe.id)]
+    for chat in chats:
+        with suppress(TelegramBadRequest, TelegramForbiddenError):
+            await bot.send_message(chat, text)
+    store.set_reported_until(cafe.id, ends)
 
 
 def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
@@ -251,7 +345,8 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
                 f"Готово, вы администратор «{cafe.name}».\n\n"
                 "/admin — ссылка для входа в веб-админку (меню, цены, фото, заказы)\n"
                 "/staff — отправьте в группе персонала, чтобы заказы приходили туда\n"
-                "/stats — заказы за сегодня"
+                "/couriers — в группе курьеров, /finance — в группе для денег и отчётов\n"
+                "/report — отчёт за сегодня"
             )
         text, markup = start_view(cafe, customer_lang(store, cafe.id, m.from_user))
         await m.answer(text, reply_markup=markup)
@@ -281,6 +376,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await q.answer(t(lang, "cancel_no"), show_alert=True)
         o = store.order(cafe.id, int(match[1]))
         await refresh_staff(bot, store, cafe, o, note=f"❗️ Клиент отменил заказ №{o.number}")
+        await to_finance(bot, cafe, receipt(cafe, o, cancelled_by="клиентом"))
         await redraw(q, *(orders_view(cafe, q.from_user.id, lang) if match[2] else customer_view(cafe, o, lang)))
         await q.answer(t(lang, "cancelled_ok", number=o.number))
 
@@ -290,9 +386,27 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         if not store.claim_transfer(cafe.id, q.from_user.id, int(match[1])):
             return await q.answer(t(lang, "claim_no"), show_alert=True)
         o = store.order(cafe.id, int(match[1]))
-        await refresh_staff(bot, store, cafe, o, note=f"💳 Клиент сообщил о переводе по заказу №{o.number} — проверьте")
+        if cafe.finance_chat_id:
+            await refresh_staff(bot, store, cafe, o)
+            await post(bot, store, cafe, o, [cafe.finance_chat_id], finance_card)
+        else:
+            note = f"💳 Клиент сообщил о переводе по заказу №{o.number} — проверьте"
+            await refresh_staff(bot, store, cafe, o, note=note)
         await redraw(q, *customer_view(cafe, o, lang))
         await q.answer(t(lang, "claim_ok"))
+
+    @r.message(F.chat.type == "private", F.photo)
+    async def transfer_screenshot(m: Message, bot: Bot, cafe: Cafe):
+        """After "I've paid" the customer sends the bank screenshot; it goes to whoever checks the money."""
+        o = store.claimed_transfer(cafe.id, m.from_user.id)
+        if not o:
+            return
+        chats = [cafe.finance_chat_id or cafe.staff_chat_id] if cafe.finance_chat_id or cafe.staff_chat_id else []
+        caption = f"🧾 Скриншот перевода по заказу №{o.number} · {cafe.money(o.total)} · {o.customer}"
+        for chat in chats or [uid for uid, _ in store.admins(cafe.id)]:
+            with suppress(TelegramBadRequest, TelegramForbiddenError):
+                await bot.copy_message(chat, m.chat.id, m.message_id, caption=caption)
+        await m.answer(t(customer_lang(store, cafe.id, m.from_user), "screenshot_ok"))
 
     @r.message(Command("privacy"))
     async def privacy(m: Message, cafe: Cafe):
@@ -314,7 +428,13 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await q.answer("Статус уже изменён")
         await q.answer(STATUSES[match[2]])
 
-    @r.callback_query(F.data.regexp(r"^pay:(\d+)$").as_("match"), is_staff)
+    async def checks_money(q: CallbackQuery, cafe: Cafe) -> bool:
+        """The finance group when there is one, otherwise staff; admins always."""
+        if cafe.finance_chat_id is not None and q.message.chat.id == cafe.finance_chat_id:
+            return True
+        return store.is_admin(cafe.id, q.from_user.id) or (not cafe.finance_chat_id and await is_staff(q, cafe))
+
+    @r.callback_query(F.data.regexp(r"^pay:(\d+)$").as_("match"), checks_money)
     async def payment_received(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
         if not await mark_paid(bot, store, cafe, int(match[1])):
             return await q.answer("Оплата уже отмечена")
@@ -368,10 +488,33 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         store.set_courier_chat(cafe.id, m.chat.id)
         await m.answer(f"Доставки «{cafe.name}» теперь приходят в этот чат: «Беру» — взять, «Доставлен» — у двери.")
 
-    @r.message(Command("stats"), is_admin)
-    async def stats(m: Message, cafe: Cafe):
-        n, total = store.stats(cafe.id, cafe.today())
-        await m.answer(f"Сегодня: {n} заказов на {cafe.money(total)}")
+    @r.message(Command("finance"), is_admin)
+    async def finance(m: Message, cafe: Cafe):
+        if m.chat.type == "private":
+            store.set_finance_chat(cafe.id, None)
+            return await m.answer("Группа финансов отключена: переводы проверяет персонал, отчёт — /report здесь.")
+        store.set_finance_chat(cafe.id, m.chat.id)
+        await m.answer(
+            f"Финансы «{cafe.name}» теперь здесь: закрытые заказы, переводы со скриншотами и отчёт в конце дня.\n"
+            "/report — за сегодня, /report yesterday — за вчера, /report 12h — за последние 12 часов."
+        )
+
+    async def sees_money(m: Message, cafe: Cafe) -> bool:
+        in_finance = cafe.finance_chat_id is not None and m.chat.id == cafe.finance_chat_id
+        return in_finance or (m.chat.type == "private" and store.is_admin(cafe.id, m.from_user.id))
+
+    @r.message(Command("report"), sees_money)
+    async def report_cmd(m: Message, command: CommandObject, cafe: Cafe):
+        now = cafe.now()
+        arg = (command.args or "").strip().lower()
+        began = cafe.day_began(now)
+        if arg == "yesterday":
+            since, until, title = began - timedelta(days=1), began, "вчера"
+        elif arg.endswith("h") and arg[:-1].isdigit() and 0 < int(arg[:-1]) <= 24 * 31:
+            since, until, title = now - timedelta(hours=int(arg[:-1])), now, f"последние {arg[:-1]} ч"
+        else:
+            since, until, title = began, now, "сегодня"
+        await m.answer(report(cafe, store.orders_between(cafe.id, since, until), title, since, until))
 
     # anything else typed in private (old keyboards, "hi") gets the greeting with the menu button
     @r.message(F.chat.type == "private", F.text)
