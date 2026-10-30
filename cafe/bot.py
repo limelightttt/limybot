@@ -79,7 +79,11 @@ def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
         + (f"\n💬 {o.comment}" if o.comment else "")
         + (f"\n🛵 Везёт: {o.courier_name}" if o.courier_name else "")
     )
-    actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in o.next_statuses]
+    steps = o.next_statuses
+    if o.status == "courier" and cafe.courier_chat_id:  # the courier marks it at the door, not the kitchen
+        steps = []
+        text += "\n\n⏳ Ждём отметку курьера"
+    actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in steps]
     paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
     return text, kb([actions, paid])
 
@@ -304,6 +308,8 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     @r.callback_query(F.data.regexp(r"^st:(\d+):([a-z]+)$").as_("match"), is_staff)
     async def status(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
         o = store.order(cafe.id, int(match[1]))
+        if match[2] == "delivered" and cafe.courier_chat_id:
+            return await q.answer("Доставку отмечает курьер в своей группе", show_alert=True)
         if not o or not await change_status(bot, store, cafe, o, match[2]):
             return await q.answer("Статус уже изменён")
         await q.answer(STATUSES[match[2]])

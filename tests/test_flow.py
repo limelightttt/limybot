@@ -242,6 +242,10 @@ async def test_couriers_take_and_deliver(env, store, demo):
     o = await place(picks=[pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)], method="delivery", address="Чиланзар 9")
     for status in ("accepted", "cooking", "courier"):
         await feed(tap(OWNER, f"st:{o.id}:{status}"))
+    staff = [m for m in session.messages(OWNER) if isinstance(m, EditMessageText)][-1]
+    assert "Ждём отметку курьера" in staff.text and not buttons(staff)  # the kitchen cannot mark it delivered
+    await feed(tap(OWNER, f"st:{o.id}:delivered"))  # a stale or forged button
+    assert store.order(demo.id, o.id).status == "courier"
     card = session.messages(-700)[-1]
     assert "📍 Чиланзар 9" in card.text and "Получить с клиента: 129 000 сум" in card.text
     assert [b.callback_data for b in buttons(card)] == [f"take:{o.id}"]
