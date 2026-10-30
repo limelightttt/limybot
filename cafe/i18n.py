@@ -35,7 +35,6 @@ BOT_TEXTS = {
         "open_menu": "☕️ Открыть меню",
         "my_orders": "📋 Мои заказы",
         "switch_lang": "🇺🇿 Oʻzbekcha",
-        "no_webapp": "Меню откроется по кнопке, когда бот будет запущен на сервере с HTTPS.",
         "inactive": "«{name}» сейчас не принимает заказы через бота. Позвоните нам или загляните лично 🙌",
         # what the customer is told when staff move the order; ready/courier differ by how it is received
         "status_accepted": "Заказ №{number} принят ✅ Скоро начнём готовить.",
@@ -78,7 +77,6 @@ BOT_TEXTS = {
         "open_menu": "☕️ Menyuni ochish",
         "my_orders": "📋 Buyurtmalarim",
         "switch_lang": "🇷🇺 Русский",
-        "no_webapp": "Bot HTTPS server ishga tushirilganda menyu tugma orqali ochiladi.",
         "inactive": "«{name}» hozir bot orqali buyurtma qabul qilmayapti. Bizga qoʻngʻiroq qiling yoki keling 🙌",
         "status_accepted": "№{number} buyurtma qabul qilindi ✅ Tez orada tayyorlashni boshlaymiz.",
         "status_cooking": "№{number} buyurtma tayyorlanmoqda ☕️",

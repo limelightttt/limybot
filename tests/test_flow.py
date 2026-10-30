@@ -232,3 +232,61 @@ async def test_two_cafes_one_process(store, demo, settings):
     await dp_a.feed_update(bot_a, message(CUSTOMER, "/orders"))
     assert a.texts(CUSTOMER)[-1].startswith("Заказов пока нет")
     assert not [m for m in a.sent if isinstance(m, SendMessage) and m.chat_id == 9]
+
+
+async def test_couriers_take_and_deliver(env, store, demo):
+    feed, place, session = env
+    couriers = Chat(id=-700, type="supergroup")
+    await feed(message(OWNER, "/couriers", chat=couriers))
+    assert store.cafe(demo.id).courier_chat_id == -700
+    o = await place(picks=[pick(store, demo.id, "Чизкейк Нью-Йорк", qty=3)], method="delivery", address="Чиланзар 9")
+    for status in ("accepted", "cooking", "courier"):
+        await feed(tap(OWNER, f"st:{o.id}:{status}"))
+    card = session.messages(-700)[-1]
+    assert "📍 Чиланзар 9" in card.text and "Получить с клиента: 129 000 сум" in card.text
+    assert [b.callback_data for b in buttons(card)] == [f"take:{o.id}"]
+
+    await feed(tap(CUSTOMER, f"take:{o.id}"))  # forged from a private chat: nothing
+    await feed(tap(301, f"dlv:{o.id}", chat=couriers))  # not taken yet
+    assert store.order(demo.id, o.id).courier_id is None
+    await feed(tap(301, f"take:{o.id}", chat=couriers))
+    await feed(tap(302, f"take:{o.id}", chat=couriers))
+    assert alerts(session)[-1] == "Заказ уже взял другой курьер"
+    card = session.messages(-700)[-1]
+    assert "Везёт: User301" in card.text and [b.callback_data for b in buttons(card)] == [f"dlv:{o.id}"]
+    assert "🛵 Везёт: User301" in [m for m in session.messages(OWNER) if isinstance(m, EditMessageText)][-1].text
+    await feed(tap(302, f"dlv:{o.id}", chat=couriers))  # only the one who took it
+    assert store.order(demo.id, o.id).status == "courier"
+    await feed(tap(301, f"dlv:{o.id}", chat=couriers))
+    o = store.order(demo.id, o.id)
+    assert (o.status, o.payment_status) == ("delivered", "paid")
+    assert not buttons(session.messages(-700)[-1])
+
+    await feed(message(OWNER, "/couriers"))  # in private: back to staff marking delivery
+    assert store.cafe(demo.id).courier_chat_id is None
+
+
+async def test_forgotten_orders_close_themselves(env, store, demo, fake):
+    from datetime import UTC, datetime, timedelta
+
+    from cafe.bot import close_stale
+
+    _, place, _ = env
+    bot, _ = fake
+    old = await place()
+    for status in ("accepted", "cooking", "ready"):
+        store.set_status(demo.id, old.id, status)
+    fresh = await place()
+    store.db.execute(
+        "update orders set created_at = ? where id = ?", ((datetime.now(UTC) - timedelta(hours=7)).isoformat(), old.id)
+    )
+    await close_stale(bot, store, demo, hours=6)
+    assert store.order(demo.id, old.id).status == "done" and store.order(demo.id, fresh.id).status == "new"
+
+
+async def test_no_https_no_menu_button_and_no_tech_text(store, demo, settings):
+    settings.public_url = "http://localhost:8000"
+    session = FakeSession()
+    await build(store, demo.id, settings).feed_update(Bot("1:demo", session=session), message(CUSTOMER, "/start"))
+    greeting = session.messages(CUSTOMER)[-1]
+    assert greeting.text == demo.greeting and not any(b.web_app for b in buttons(greeting))

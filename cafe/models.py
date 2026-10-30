@@ -48,7 +48,6 @@ class Cafe:
     delivery_enabled: bool
     delivery_min: int
     delivery_fee: int
-    payment_note: str
     staff_chat_id: int | None
     invite_code: str | None
     brand_color: str
@@ -58,6 +57,7 @@ class Cafe:
     card_holder: str
     paid_until: date | None  # set by the operator: python -m cafe paid <name> <date>
     enabled: bool
+    courier_chat_id: int | None  # the couriers' group: they take orders on their way and mark them delivered
 
     def now(self) -> datetime:
         return datetime.now(ZoneInfo(self.timezone))
@@ -182,6 +182,8 @@ class Order:
     payment_method: str
     payment_status: str
     created_at: datetime
+    courier_id: int | None
+    courier_name: str | None
 
     @property
     def next_statuses(self) -> list[str]:

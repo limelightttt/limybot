@@ -5,6 +5,7 @@ the database on every update, so edits made in the web admin apply immediately."
 
 import logging
 from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 from html import escape
 from urllib.parse import urlencode
 
@@ -74,17 +75,38 @@ def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
     payment = f"{PAYMENT_METHODS[o.payment_method]} · {PAYMENT_STATUSES[o.payment_status]}"
     text = (
         f"Заказ №{o.number} · {STATUSES[o.status]}\n\n{o.lines_text(cafe)}{fee}\nИтого: {cafe.money(o.total)}\n"
-        f"💳 {payment}\n\n{where}\n👤 {o.customer}, {o.phone}" + (f"\n💬 {o.comment}" if o.comment else "")
+        f"💳 {payment}\n\n{where}\n👤 {o.customer}, {o.phone}"
+        + (f"\n💬 {o.comment}" if o.comment else "")
+        + (f"\n🛵 Везёт: {o.courier_name}" if o.courier_name else "")
     )
     actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in o.next_statuses]
     paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
     return text, kb([actions, paid])
 
 
-async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
-    """To the staff group; until it is set up (/staff), to every admin privately."""
-    text, markup = staff_card(cafe, o)
-    chats = [cafe.staff_chat_id] if cafe.staff_chat_id else [uid for uid, _ in store.admins(cafe.id)]
+def courier_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
+    """What the couriers' group sees: where to go, whom to call, what to collect. "Беру" first, then "Доставлен"."""
+    if o.payment_status == "paid":
+        collect = "Оплачено"
+    elif o.payment_method == "transfer":
+        collect = f"Перевод на карту, {PAYMENT_STATUSES[o.payment_status].lower()}: проверьте у кафе"
+    else:
+        collect = f"Получить с клиента: {cafe.money(o.total)}"
+    text = (
+        f"🛵 Доставка №{o.number} · {STATUSES[o.status]}\n\n📍 {o.address}\n👤 {o.customer}, {o.phone}"
+        + (f"\n💬 {o.comment}" if o.comment else "")
+        + f"\n\n{o.lines_text(cafe)}\n💳 {collect}"
+        + (f"\n\nВезёт: {o.courier_name}" if o.courier_name else "")
+    )
+    if o.status != "courier":
+        return text, None
+    if not o.courier_id:
+        return text, kb([[button("🙋 Беру", f"take:{o.id}", "primary")]])
+    return text, kb([[button("🏁 Доставлен", f"dlv:{o.id}", "success")]])
+
+
+async def post(bot: Bot, store: Store, cafe: Cafe, o: Order, chats: list[int], card) -> None:
+    text, markup = card(cafe, o)
     for chat in chats:
         try:
             msg = await bot.send_message(chat, text, reply_markup=markup)
@@ -94,13 +116,21 @@ async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
         store.add_staff_message(o.id, chat, msg.message_id)
 
 
+async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
+    """To the staff group; until it is set up (/staff), to every admin privately."""
+    chats = [cafe.staff_chat_id] if cafe.staff_chat_id else [uid for uid, _ in store.admins(cafe.id)]
+    await post(bot, store, cafe, o, chats, staff_card)
+
+
 async def refresh_staff(bot: Bot, store: Store, cafe: Cafe, o: Order, note: str | None = None) -> None:
-    """Redraw the order's cards in staff chats. A note goes out as a reply to the card, so staff get a notification."""
-    text, markup = staff_card(cafe, o)
+    """Redraw the order's cards in staff and courier chats. A note goes out as a reply to the staff card, so staff
+    get a notification."""
     for chat_id, message_id in store.staff_messages(o.id):
+        is_courier = chat_id == cafe.courier_chat_id
+        text, markup = (courier_card if is_courier else staff_card)(cafe, o)
         with suppress(TelegramBadRequest):  # card deleted in the chat
             await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
-        if note:
+        if note and not is_courier:
             with suppress(TelegramBadRequest, TelegramForbiddenError):
                 reply = ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
                 await bot.send_message(chat_id, note, reply_parameters=reply)
@@ -140,6 +170,8 @@ async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) 
     store.set_status(cafe.id, o.id, new)
     o = store.order(cafe.id, o.id)
     await refresh_staff(bot, store, cafe, o)
+    if new == "courier" and cafe.courier_chat_id:
+        await post(bot, store, cafe, o, [cafe.courier_chat_id], courier_card)
     key = f"status_{new}"  # nothing is sent when the order is handed over: the customer already has it
     if key in i18n.BOT_TEXTS["ru"]:
         lang = customer_lang(store, cafe.id, o.user_id)
@@ -160,6 +192,12 @@ async def mark_paid(bot: Bot, store: Store, cafe: Cafe, order_id: int) -> bool:
     return True
 
 
+async def close_stale(bot: Bot, store: Store, cafe: Cafe, hours: int) -> None:
+    """Orders left ready or on the way for hours were handed over long ago: close them, so they leave the lists."""
+    for o in store.stale(cafe.id, datetime.now(UTC) - timedelta(hours=hours)):
+        await change_status(bot, store, cafe, o, o.next_statuses[0])
+
+
 def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     r = Router()
 
@@ -169,8 +207,8 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         if not cafe.active():
             return t(lang, "inactive", name=cafe.name), kb(rows)
         url = app_url(settings, cafe)
-        if not url:
-            return f"{cafe.greeting}\n\n{t(lang, 'no_webapp')}", kb(rows)
+        if not url:  # a local run without https: Telegram opens Mini Apps only over https
+            return cafe.greeting, kb(rows)
         menu = button(t(lang, "open_menu"), style="primary", web_app=WebAppInfo(url=url))
         return cafe.greeting, kb([[menu], *rows])
 
@@ -276,6 +314,26 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await q.answer("Оплата уже отмечена")
         await q.answer("Оплачен")
 
+    # --- couriers ---
+    async def is_courier(q: CallbackQuery, cafe: Cafe) -> bool:
+        return cafe.courier_chat_id is not None and q.message.chat.id == cafe.courier_chat_id
+
+    @r.callback_query(F.data.regexp(r"^take:(\d+)$").as_("match"), is_courier)
+    async def take(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        if not store.take(cafe.id, int(match[1]), q.from_user.id, q.from_user.full_name):
+            return await q.answer("Заказ уже взял другой курьер", show_alert=True)
+        await refresh_staff(bot, store, cafe, store.order(cafe.id, int(match[1])))
+        await q.answer("Заказ ваш")
+
+    @r.callback_query(F.data.regexp(r"^dlv:(\d+)$").as_("match"), is_courier)
+    async def delivered(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        o = store.order(cafe.id, int(match[1]))
+        if not o or o.courier_id != q.from_user.id:
+            return await q.answer("Отметить доставку может тот, кто взял заказ", show_alert=True)
+        if not await change_status(bot, store, cafe, o, "delivered"):
+            return await q.answer("Статус уже изменён")
+        await q.answer("Доставлен")
+
     # --- owner ---
     async def is_admin(m: Message, cafe: Cafe) -> bool:
         return store.is_admin(cafe.id, m.from_user.id)
@@ -295,6 +353,14 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await m.answer("Заказы снова приходят администраторам в личные сообщения.")
         store.set_staff_chat(cafe.id, m.chat.id)
         await m.answer(f"Заказы «{cafe.name}» теперь приходят в этот чат.")
+
+    @r.message(Command("couriers"), is_admin)
+    async def couriers(m: Message, cafe: Cafe):
+        if m.chat.type == "private":
+            store.set_courier_chat(cafe.id, None)
+            return await m.answer("Группа курьеров отключена: доставку отмечает персонал.")
+        store.set_courier_chat(cafe.id, m.chat.id)
+        await m.answer(f"Доставки «{cafe.name}» теперь приходят в этот чат: «Беру» — взять, «Доставлен» — у двери.")
 
     @r.message(Command("stats"), is_admin)
     async def stats(m: Message, cafe: Cafe):

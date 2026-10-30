@@ -106,7 +106,6 @@ def router(web: Web) -> APIRouter:
             "pickup_address": cafe.pickup_address,
             "delivery": {"enabled": cafe.delivery_enabled, "min": cafe.delivery_min, "fee": cafe.delivery_fee},
             "payments": cafe.payment_methods(),
-            "payment_note": cafe.payment_note,
             "menu": menu_data(cafe),
             "texts": APP_TEXTS,
         }

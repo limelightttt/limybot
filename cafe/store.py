@@ -17,10 +17,9 @@ create table cafes (
   timezone text not null default 'Asia/Tashkent', open_time text, close_time text,
   pickup_address text not null default '', delivery_enabled integer not null default 0,
   delivery_min integer not null default 0, delivery_fee integer not null default 0,
-  payment_note text not null default 'Оплата наличными или картой при получении',
   staff_chat_id integer, invite_code text, brand_color text not null default '#8b5e3c', logo text, cover text,
   card_number text not null default '', card_holder text not null default '', paid_until text,
-  enabled integer not null default 1
+  enabled integer not null default 1, courier_chat_id integer
 );
 create table admins (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null,
@@ -54,7 +53,7 @@ create table orders (
   comment text, lines text not null, subtotal integer not null, delivery_fee integer not null,
   total integer not null, status text not null default 'new',
   payment_method text not null default 'cash', payment_status text not null default 'pending',
-  created_at text not null, unique (cafe_id, number)
+  created_at text not null, courier_id integer, courier_name text, unique (cafe_id, number)
 );
 create table staff_messages (
   order_id integer not null references orders on delete cascade, chat_id integer not null,
@@ -93,6 +92,14 @@ MIGRATIONS = [
       address text, lang text not null default 'ru', primary key (cafe_id, user_id)
     );
     """,
+    # 2: couriers (their own group takes and delivers orders); the owner's payment note goes — it could not be
+    # shown in the customer's language and the payment method already says it
+    """
+    alter table cafes add column courier_chat_id integer;
+    alter table orders add column courier_id integer;
+    alter table orders add column courier_name text;
+    alter table cafes drop column payment_note;
+    """,
 ]
 
 CAFE_FIELDS = {
@@ -106,7 +113,6 @@ CAFE_FIELDS = {
     "delivery_enabled",
     "delivery_min",
     "delivery_fee",
-    "payment_note",
     "brand_color",
     "card_number",
     "card_holder",
@@ -200,6 +206,10 @@ class Store:
     def set_staff_chat(self, cafe_id: int, chat_id: int | None) -> None:
         with self.db:
             self.db.execute("update cafes set staff_chat_id = ? where id = ?", (chat_id, cafe_id))
+
+    def set_courier_chat(self, cafe_id: int, chat_id: int | None) -> None:
+        with self.db:
+            self.db.execute("update cafes set courier_chat_id = ? where id = ?", (chat_id, cafe_id))
 
     def set_cafe_image(self, cafe_id: int, kind: str, name: str | None) -> str | None:
         """Logo or cover; returns the previous file name so the caller can delete it."""
@@ -640,6 +650,24 @@ class Store:
                     "update orders set payment_status = 'paid' where id = ? and payment_method = 'cash'",
                     (order_id,),
                 )
+
+    def take(self, cafe_id: int, order_id: int, user_id: int, name: str) -> bool:
+        """A courier takes an order on its way; the first one wins."""
+        with self.db:
+            cur = self.db.execute(
+                "update orders set courier_id = ?, courier_name = ?"
+                " where id = ? and cafe_id = ? and status = 'courier' and courier_id is null",
+                (user_id, name, order_id, cafe_id),
+            )
+        return cur.rowcount == 1
+
+    def stale(self, cafe_id: int, before: datetime) -> list[Order]:
+        """Ready or on the way since before: nobody closed them, the customer has them long ago."""
+        rows = self.db.execute(
+            "select * from orders where cafe_id = ? and status in ('ready', 'courier') and created_at < ?",
+            (cafe_id, before.astimezone(UTC).isoformat()),
+        )
+        return [self._order(r) for r in rows]
 
     def cancel_by_customer(self, cafe_id: int, user_id: int, order_id: int) -> bool:
         """Only while nobody has accepted the order; a single statement, so it cannot race the staff's button."""

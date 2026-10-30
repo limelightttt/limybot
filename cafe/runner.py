@@ -18,7 +18,7 @@ from aiogram.exceptions import (
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
 
 from .backup import make_backup
-from .bot import app_url, build
+from .bot import app_url, build, close_stale
 from .config import Settings
 from .i18n import LANGS
 from .store import Store
@@ -26,6 +26,7 @@ from .web import create_app
 
 log = logging.getLogger(__name__)
 SYNC_EVERY = 15  # seconds
+AUTO_CLOSE_HOURS = 6  # ready / on the way longer than this: handed over, nobody pressed the button
 
 
 @dataclass
@@ -97,7 +98,9 @@ class Runner:
         for lang in LANGS:
             await bot.set_my_commands(commands[lang], language_code=None if lang == "ru" else lang)
         if url := app_url(self.settings, self.store.cafe(cafe_id)):
-            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Меню", web_app=WebAppInfo(url=url)))
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Menyu · Меню", web_app=WebAppInfo(url=url))
+            )
 
     async def backup(self) -> None:
         today = date.today()
@@ -109,6 +112,11 @@ class Runner:
                 return
             self.backed_up = today
             log.info("backup: %s", path)
+
+    async def close_stale(self) -> None:
+        for cafe_id, r in list(self.running.items()):
+            if cafe := self.store.cafe(cafe_id):
+                await close_stale(r.bot, self.store, cafe, AUTO_CLOSE_HOURS)
 
     async def stop(self, cafe_id: int) -> None:
         r = self.running.pop(cafe_id)
@@ -123,6 +131,7 @@ class Runner:
             log.warning("No cafes yet. Add one: python -m cafe add <name> --token <TOKEN> --from <json>")
         while True:
             await self.backup()
+            await self.close_stale()
             await asyncio.sleep(SYNC_EVERY)
             await self.sync()
 

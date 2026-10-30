@@ -87,6 +87,7 @@
 
   // --- views ---
   function render() {
+    document.documentElement.lang = state.lang;
     $("#lang").textContent = state.lang === "uz" ? "RU" : "UZ";
     $("#status").textContent = !D.active ? T("inactive") : D.open ? D.hours : T("closed", { hours: D.hours });
     if (state.view === "cart" && !state.cart.length) state.view = "menu";
@@ -176,7 +177,6 @@
         ${share}
         <label>${T("comment")}<input name="comment" maxlength="300" value="${esc(f.comment)}" placeholder="${T("comment_hint")}"></label>
         ${payment}
-        ${f.payment === "cash" && D.payment_note ? `<p class="hint">💳 ${esc(D.payment_note)}</p>` : ""}
         <ul class="summary"><li><span>${T("subtotal")}</span><span>${money(sub)}</span></li>
           ${fee ? `<li><span>${T("delivery_fee")}</span><span>${money(fee)}</span></li>` : ""}
           <li class="total"><span>${T("total")}</span><span>${money(sub + fee)}</span></li></ul>

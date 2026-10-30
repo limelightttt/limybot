@@ -122,7 +122,6 @@ async def test_settings(web, store, demo):
         "name": "Limy Coffee",
         "greeting": "Салют!",
         "pickup_address": "Юнусабад 5",
-        "payment_note": "Наличные",
         "open_time": "08:00",
         "close_time": "02:00",
         "delivery_min": "70000",
