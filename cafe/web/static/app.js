@@ -344,6 +344,12 @@
   if (tg) {
     tg.ready();
     tg.expand();
+    if (document.documentElement.dataset.theme !== "auto") {
+      // the cafe keeps its own look: paint Telegram's header and background to match the page
+      const bg = getComputedStyle(document.documentElement).getPropertyValue("--bg").trim();
+      tg.setHeaderColor(bg);
+      tg.setBackgroundColor(bg);
+    }
     tg.BackButton.onClick(() => (sheet ? closeSheet() : go("menu")));
   }
   render();

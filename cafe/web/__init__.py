@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 from ..bot import BUTTON
 from ..config import Settings
 from ..media import ensure_thumbs, thumb
-from ..models import PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES
+from ..models import APP_THEMES, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES
 from ..store import SESSION_TTL, Store
 from . import cafe_settings, menu, miniapp, orders, promo
 from .common import COOKIE, LoginRequired, Web
@@ -31,6 +31,7 @@ def create_app(store: Store, settings: Settings, bot_for: Callable[[int], Bot | 
     templates = Jinja2Templates(directory=HERE / "templates")
     templates.env.globals.update(
         ACTIONS=BUTTON,
+        APP_THEMES=APP_THEMES,
         STATUSES=STATUSES,
         PAYMENT_METHODS=PAYMENT_METHODS,
         PAYMENT_STATUSES=PAYMENT_STATUSES,

@@ -20,7 +20,7 @@ create table cafes (
   payment_note text not null default 'Оплата наличными или картой при получении',
   staff_chat_id integer, invite_code text, brand_color text not null default '#8b5e3c', logo text, cover text,
   card_number text not null default '', card_holder text not null default '', paid_until text,
-  enabled integer not null default 1
+  enabled integer not null default 1, app_theme text not null default 'auto'
 );
 create table admins (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null,
@@ -93,6 +93,10 @@ MIGRATIONS = [
       address text, lang text not null default 'ru', primary key (cafe_id, user_id)
     );
     """,
+    # 2: the Mini App can keep the cafe's own light or dark look instead of following the guest's Telegram theme
+    """
+    alter table cafes add column app_theme text not null default 'auto';
+    """,
 ]
 
 CAFE_FIELDS = {
@@ -108,6 +112,7 @@ CAFE_FIELDS = {
     "delivery_fee",
     "payment_note",
     "brand_color",
+    "app_theme",
     "card_number",
     "card_holder",
 }

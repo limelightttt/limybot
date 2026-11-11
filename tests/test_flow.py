@@ -48,19 +48,19 @@ async def test_greeting_opens_the_mini_app(env, store, demo):
     assert greeting.text.startswith("Привет! Это Demo Coffee")
     menu = buttons(greeting)[0]
     assert (menu.text, menu.web_app.url, menu.style) == (
-        "☕️ Открыть меню",
+        "🍽 Открыть меню",
         "https://admin.example.uz/app/demo",
         "primary",
     )
 
     await feed(tap(CUSTOMER, "lang:uz"))
-    assert [b.text for b in buttons(session.messages(CUSTOMER)[-1])][:2] == ["☕️ Menyuni ochish", "📋 Buyurtmalarim"]
+    assert [b.text for b in buttons(session.messages(CUSTOMER)[-1])][:2] == ["🍽 Menyuni ochish", "📋 Buyurtmalarim"]
     assert store.customer(demo.id, CUSTOMER).lang == "uz"
     await feed(message(CUSTOMER, "🛒 Корзина"))  # a leftover keyboard from the old bot, or just "hi"
     assert buttons(session.messages(CUSTOMER)[-1])[0].web_app
 
     await feed(message(200, "/start", lang="uz"))  # Telegram language decides until the customer picks one
-    assert buttons(session.messages(200)[-1])[0].text == "☕️ Menyuni ochish"
+    assert buttons(session.messages(200)[-1])[0].text == "🍽 Menyuni ochish"
 
     store.set_enabled(demo.id, False)  # e.g. the subscription is not paid
     await feed(message(CUSTOMER, "/start"))
@@ -81,7 +81,7 @@ async def test_delivery_steps_and_texts(env, store, demo):
     told = session.texts(CUSTOMER)[before:]
     assert told == [
         "Заказ №1 принят ✅ Скоро начнём готовить.",
-        "Заказ №1 готовится ☕️",
+        "Заказ №1 готовится 👨‍🍳",
         "Заказ №1 передан курьеру 🛵 Скоро будет у вас.",
     ]  # nothing on «Доставлен»: the customer has it in hand
     assert "Заказ №1 · Доставлен" in session.texts(OWNER)[-1]

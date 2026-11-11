@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import time as clock
 import zipfile
@@ -5,6 +6,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from pydantic import ValidationError
 
 from cafe import backup as backup_module
@@ -12,7 +14,7 @@ from cafe import store as store_module
 from cafe.backup import make_backup
 from cafe.media import ensure_thumbs, save_photo, thumb
 from cafe.store import MIGRATIONS, Store
-from cafe.template import Template, import_cafe
+from cafe.template import Template, import_cafe, load_template
 from tests.conftest import item_id, option_id, order, pick
 
 V0 = Path(__file__).with_name("schema_v0.sql")
@@ -296,3 +298,42 @@ async def test_daily_backup_keeps_two_weeks(store, demo, settings, monkeypatch):
         "limybot-2026-10-04.zip",
         "limybot-2026-10-05.zip",
     ]
+
+
+def test_brand_text_is_readable(store, demo):
+    assert demo.on_brand() == "#ffffff"  # the default brown
+    for color, text in (("#ffc72c", "#141414"), ("#ffffff", "#141414"), ("#0a7d55", "#ffffff"), ("#000000", "#ffffff")):
+        store.update_cafe(demo.id, brand_color=color)
+        assert store.cafe(demo.id).on_brand() == text, color
+
+
+def test_template_with_pictures(store, settings, tmp_path):
+    pack = tmp_path / "pack"
+    (pack / "photos").mkdir(parents=True)
+    for name in ("logo.png", "cover.png", "photos/burger.png"):
+        Image.new("RGB", (900, 600), "goldenrod").save(pack / name)
+    t = {
+        "name": "Burger Place",
+        "brand_color": "#FFC72C",
+        "app_theme": "dark",
+        "logo": "logo.png",
+        "cover": "cover.png",
+        "menu": [{"category": "Бургеры", "items": [{"name": "Классик", "price": 75000, "photo": "photos/burger.png"}]}],
+    }
+    (pack / "burger.json").write_text(json.dumps(t), "utf-8")
+    template = load_template(pack / "burger.json")
+    with pytest.raises(ValueError, match="media_dir"):
+        import_cafe(store, "burger", "3:burger", template)
+    settings.media_dir.mkdir(parents=True)
+    cafe = store.cafe(import_cafe(store, "burger", "3:burger", template, settings.media_dir))
+    assert (cafe.brand_color, cafe.app_theme, cafe.on_brand()) == ("#ffc72c", "dark", "#141414")
+    burger = store.item(cafe.id, item_id(store, cafe.id, "Классик"))
+    for name in (cafe.logo, cafe.cover, burger.photo, thumb(burger.photo)):
+        assert (settings.media_dir / name).is_file()
+
+    t["menu"][0]["items"][0]["photo"] = "photos/missing.png"
+    (pack / "burger.json").write_text(json.dumps(t), "utf-8")
+    with pytest.raises(ValueError, match="missing.png"):
+        load_template(pack / "burger.json")
+    with pytest.raises(ValidationError):
+        Template(name="X", app_theme="neon")

@@ -33,10 +33,16 @@
 </section>
 <section class="card" id="brand">
   <h2>Оформление витрины</h2>
-  <p class="muted">Так бот выглядит для гостей: обложка сверху, логотип, фирменный цвет кнопок.
+  <p class="muted">Так бот выглядит для гостей: обложка сверху, логотип, фирменный цвет кнопок. Тёмная или светлая
+    тема держит стиль заведения у всех гостей, «как в Telegram» — подстраивается под каждого.
     <a href="/app/{{ cafe.slug }}" target="_blank" rel="noopener">Открыть витрину ↗</a></p>
   <form method="post" action="/settings/brand" enctype="multipart/form-data" class="stack">
     <label>Фирменный цвет <input type="color" name="brand_color" value="{{ cafe.brand_color }}" class="color"></label>
+    <label>Тема витрины
+      <select name="app_theme">
+        {% for key, title in APP_THEMES.items() %}<option value="{{ key }}" {% if cafe.app_theme == key %}selected{% endif %}>{{ title }}</option>{% endfor %}
+      </select>
+    </label>
     <fieldset>
       <legend>Логотип (квадратный)</legend>
       {% if cafe.logo %}<img class="preview logo-preview" src="/media/{{ cafe.logo | thumb }}" alt="">
