@@ -1,0 +1,28 @@
+{% extends "ops/base.html" %}
+{% block content %}
+<div class="row" style="margin-bottom:16px">
+  <h1 style="margin:0">Заведения</h1>
+  <a class="button primary" href="/ops/new">+ Подключить</a>
+</div>
+{% if not public_url.startswith("https://") %}
+<p class="flash danger">Нет https-адреса — боты отвечают, но витрина (меню) в Telegram не откроется.
+  На своём компьютере установите cloudflared (Mac: <code>brew install cloudflared</code>) и перезапустите <code>./run.sh</code>.</p>
+{% endif %}
+{% for cafe, (level, text), (orders, revenue) in cafes %}
+<a class="card cafe-row" href="/ops/cafes/{{ cafe.id }}">
+  {% if cafe.logo %}<img src="/media/{{ cafe.logo | thumb }}" alt="">{% else %}<span class="nologo">{{ cafe.name[:1] }}</span>{% endif %}
+  <span class="grow">
+    <strong>{{ cafe.name }}</strong><br>
+    <small>@{{ cafe.bot_username or "?" }} · заказов сегодня: {{ orders }}{% if orders %} на {{ cafe.money(revenue) }}{% endif %}{% if cafe.paid_until %} · оплачено до {{ cafe.paid_until.strftime("%d.%m") }}{% endif %}</small><br>
+    <span class="state state-{{ level }}">{{ text }}</span>
+  </span>
+  <span class="muted">›</span>
+</a>
+{% else %}
+<section class="card">
+  <h2>Заведений пока нет</h2>
+  <p>Подключение занимает пару минут: создайте бота в @BotFather, вставьте его токен и выберите меню.</p>
+  <a class="button primary" href="/ops/new">Подключить первое заведение</a>
+</section>
+{% endfor %}
+{% endblock %}

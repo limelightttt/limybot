@@ -1,0 +1,11 @@
+{% extends "ops/base.html" %}
+{% block title %}Вход{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Вход в панель оператора</h1>
+  <p>Ссылку для входа печатает <code>./run.sh</code> при запуске — она в окне Терминала, в рамке «limybot работает».
+    Ссылка одноразовая и живёт 15 минут, после входа браузер запоминает вас на месяц.</p>
+  <p>Нужна новая ссылка, не перезапуская бота: <code>./run.sh ops</code><br>
+    <small class="muted">На сервере: <code>docker compose exec app python -m cafe ops</code></small></p>
+</section>
+{% endblock %}

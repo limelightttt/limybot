@@ -13,7 +13,7 @@ from cafe.bot import send_to_staff
 from cafe.media import thumb
 from cafe.template import Template, import_cafe
 from cafe.web import create_app
-from tests.conftest import item_id, order, pick
+from tests.conftest import FakeBots, item_id, order, pick
 
 OWNER, CUSTOMER = 7, 100
 
@@ -22,7 +22,7 @@ OWNER, CUSTOMER = 7, 100
 def web(store, demo, settings, fake):
     bot, session = fake
     store.join(demo.id, store.new_invite(demo.id), OWNER, "Owner")
-    app = create_app(store, settings, lambda cafe_id: bot if cafe_id == demo.id else None)
+    app = create_app(store, settings, FakeBots({demo.id: bot}))
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://admin.example.uz")
     return client, session
 
@@ -250,4 +250,5 @@ async def test_admin_sees_only_own_cafe(web, store, demo):
     await client.post(f"/orders/{theirs.id}/status", data={"status": "cancelled"})
     await client.post(f"/orders/{theirs.id}/paid")
     assert store.item(other, tea) and store.order(other, theirs.id).status == "new"
-    assert store.consume_login(store.create_login(other, OWNER)) is None  # not an admin of the tea house
+    r = await client.get(f"/login/{store.create_login(other, OWNER)}")
+    assert r.status_code == 401  # not an admin of the tea house

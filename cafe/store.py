@@ -117,6 +117,10 @@ CAFE_FIELDS = {
     "card_holder",
 }
 CAFE_IMAGES = {"logo", "cover"}
+# The operator (who runs this installation) logs in to /ops with a link from the terminal; their sessions and login
+# links use this id. Telegram user ids start at 1, so it never meets a real admin. OPS is the cafe id of /ops sessions.
+OPERATOR = 0
+OPS = 0
 LOGIN_TTL = 15 * 60
 MAX_QTY = 99
 SESSION_TTL = 30 * 24 * 3600
@@ -182,6 +186,9 @@ class Store:
     def cafe(self, cafe_id: int) -> Cafe | None:
         return self._cafe(self.db.execute("select * from cafes where id = ?", (cafe_id,)).fetchone())
 
+    def cafe_by_token(self, token: str) -> Cafe | None:
+        return self._cafe(self.db.execute("select * from cafes where bot_token = ?", (token,)).fetchone())
+
     def cafe_by_slug(self, slug: str) -> Cafe | None:
         return self._cafe(self.db.execute("select * from cafes where slug = ?", (slug,)).fetchone())
 
@@ -202,6 +209,26 @@ class Store:
         with self.db:
             self.db.execute("update cafes set bot_username = ? where id = ?", (username, cafe_id))
 
+    def free_slug(self, base: str) -> str:
+        """base, or base-2, base-3… — the first name no cafe has."""
+        slug, n = base, 1
+        while self.cafe_by_slug(slug):
+            n += 1
+            slug = f"{base}-{n}"
+        return slug
+
+    def delete_cafe(self, cafe_id: int) -> list[str]:
+        """Everything of the cafe goes; returns its picture files for the caller to delete. Its bot token is free again."""
+        photos = [
+            r[0] for r in self.db.execute("select photo from items where cafe_id = ? and photo is not null", (cafe_id,))
+        ]
+        cafe = self.cafe(cafe_id)
+        with self.db:
+            self.db.execute("delete from login_links where cafe_id = ?", (cafe_id,))
+            self.db.execute("delete from sessions where cafe_id = ?", (cafe_id,))
+            self.db.execute("delete from cafes where id = ?", (cafe_id,))  # the rest cascades
+        return photos + [p for p in (cafe.logo, cafe.cover) if p]
+
     def set_staff_chat(self, cafe_id: int, chat_id: int | None) -> None:
         with self.db:
             self.db.execute("update cafes set staff_chat_id = ? where id = ?", (chat_id, cafe_id))
@@ -215,7 +242,7 @@ class Store:
             self.db.execute(f"update cafes set {kind} = ? where id = ?", (name, cafe_id))
         return old
 
-    # --- subscription (operator, from the CLI) ---
+    # --- subscription (operator: /ops or the CLI) ---
     def set_paid_until(self, cafe_id: int, until: date | None) -> None:
         with self.db:
             self.db.execute(
@@ -266,17 +293,20 @@ class Store:
         )
         return token
 
-    def consume_login(self, token: str) -> str | None:
-        """Trade a one-time link for a long-lived session token."""
+    def consume_login(self, token: str) -> tuple[int, int] | None:
+        """A one-time link → (cafe id, user id) it was made for; the link stops working."""
         with self.db:
             row = self.db.execute(
                 "delete from login_links where token = ? and expires > ? returning cafe_id, user_id",
                 (token, int(clock.time())),
             ).fetchone()
-        if not row or not self.is_admin(row[0], row[1]):
-            return None
+        return (row[0], row[1]) if row else None
+
+    def create_session(self, cafe_id: int, user_id: int) -> str:
         session = secrets.token_urlsafe(32)
-        self._insert("sessions", token=session, cafe_id=row[0], user_id=row[1], expires=int(clock.time()) + SESSION_TTL)
+        self._insert(
+            "sessions", token=session, cafe_id=cafe_id, user_id=user_id, expires=int(clock.time()) + SESSION_TTL
+        )
         return session
 
     def session(self, token: str) -> tuple[int, int] | None:

@@ -145,7 +145,7 @@ def router(web: Web) -> APIRouter:
         def refuse(code: str) -> JSONResponse:  # the Mini App shows APP_TEXTS[lang]["error_" + code]
             return JSONResponse({"error": code}, status_code=409)
 
-        bot = web.bot_for(cafe.id)
+        bot = web.bots.bot(cafe.id)
         if not cafe.active():
             return refuse("inactive")
         if not cafe.is_open():

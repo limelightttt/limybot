@@ -1,7 +1,10 @@
 """Starting content for a new cafe: clients/<name>.json is validated here and copied into the database.
 Pictures (logo, cover, item photos) are paths relative to the JSON file, so a client pack is one folder."""
 
+import re
+import zipfile
 from datetime import time
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
@@ -131,3 +134,58 @@ def load_template(path: Path) -> Template:
     if missing := [str(p) for p in t.pictures() if not p.is_file()]:
         raise ValueError(f"{path}: pictures not found: {', '.join(missing)}")
     return t
+
+
+def available_templates(clients: Path) -> list[tuple[str, str]]:
+    """(path relative to clients/, cafe name) of every template there that loads: clients/*.json and the packs in
+    clients/private/<brand>/*.json. A broken file is just not offered."""
+    found = []
+    for path in sorted([*clients.glob("*.json"), *clients.glob("private/*/*.json")]):
+        try:
+            found.append((path.relative_to(clients).as_posix(), load_template(path).name))
+        except ValueError:
+            continue
+    return found
+
+
+MAX_PACK = 50 * 1024 * 1024
+
+
+def unpack_pack(data: bytes, into: Path) -> Path:
+    """A client pack sent as a zip (the folder with the JSON and its pictures) → the JSON inside.
+    ValueError with a message for the operator when the archive is not a usable pack."""
+    try:
+        archive = zipfile.ZipFile(BytesIO(data))
+    except zipfile.BadZipFile:
+        raise ValueError("Это не zip-архив. Нужен архив папки, где лежат .json с меню и фото")
+    with archive:
+        files = [f for f in archive.infolist() if not f.is_dir() and not f.filename.startswith("__MACOSX/")]
+        if sum(f.file_size for f in files) > MAX_PACK:
+            raise ValueError("Архив больше 50 МБ — уменьшите фото")
+        root = into.resolve()
+        if any(not (root / f.filename).resolve().is_relative_to(root) for f in files):
+            raise ValueError("В архиве файлы с путями за пределами папки — такой архив не открываю")
+        archive.extractall(into, members=files)
+    menus = list(into.rglob("*.json"))
+    if len(menus) != 1:
+        raise ValueError(f"В архиве должен быть ровно один .json с меню, а их {len(menus)}")
+    return menus[0]
+
+
+def slug_for(username: str) -> str:
+    """The cafe's short name (in URLs and the CLI) from its bot: limy_coffee_bot → limy_coffee."""
+    return re.sub(r"_?bot$", "", re.sub(r"[^a-z0-9_-]", "", username.lower())) or "cafe"
+
+
+def connect_cafe(
+    store: Store, media_dir: Path, token: str, username: str, bot_name: str, template: Template | None
+) -> int:
+    """A new cafe on a checked bot token: menu and look from the template (an empty menu named after the bot without
+    one), a short name from the bot's username, and an invite link for the owner."""
+    media_dir.mkdir(parents=True, exist_ok=True)
+    cafe_id = import_cafe(
+        store, store.free_slug(slug_for(username)), token, template or Template(name=bot_name), media_dir
+    )
+    store.set_bot_username(cafe_id, username)
+    store.new_invite(cafe_id)
+    return cafe_id

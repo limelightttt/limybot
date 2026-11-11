@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from cafe.web import create_app
-from tests.conftest import init_data, item_id, option_id, order, pick
+from tests.conftest import FakeBots, init_data, item_id, option_id, order, pick
 
 CUSTOMER, OWNER = 100, 7
 
@@ -18,7 +18,7 @@ def app(store, demo, settings, fake):
     bot, session = fake
     store.join(demo.id, store.new_invite(demo.id), OWNER, "Owner")
     running = {demo.id: bot}
-    app = create_app(store, settings, running.get)
+    app = create_app(store, settings, FakeBots(running))
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://admin.example.uz")
     return client, session, running
 

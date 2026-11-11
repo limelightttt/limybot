@@ -32,7 +32,7 @@ def router(web: Web) -> APIRouter:
         cafe, _ = admin
         url = "/orders?all=1" if all else "/orders"
         o = store.order(cafe.id, order_id)
-        bot = web.bot_for(cafe.id)
+        bot = web.bots.bot(cafe.id)
         if not o:
             return back(url)
         if not bot:
@@ -45,7 +45,7 @@ def router(web: Web) -> APIRouter:
     async def order_paid(admin: Admin, order_id: int, all: bool = False):
         cafe, _ = admin
         url = "/orders?all=1" if all else "/orders"
-        bot = web.bot_for(cafe.id)
+        bot = web.bots.bot(cafe.id)
         if not bot:
             return back(url, "Бот кафе сейчас не запущен — оплата не отмечена")
         if not await mark_paid(bot, store, cafe, order_id):

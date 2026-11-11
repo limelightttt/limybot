@@ -2,14 +2,17 @@
 received, cancelling, "my orders", card transfers, staff buttons. Orders themselves come from the Mini App
 (tests/test_miniapp.py); here they are placed in the store and announced the same way."""
 
+from datetime import datetime
+
 import pytest
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
-from aiogram.types import Chat
+from aiogram.types import Chat, ChatMemberLeft, ChatMemberMember, ChatMemberUpdated, Message, Update, User
 
 from cafe.bot import build, send_to_customer, send_to_staff
 from cafe.template import Template, import_cafe
-from tests.conftest import FakeSession, message, order, pick, tap
+from tests.conftest import FakeSession, ids, message, order, pick, tap, user
 
 CUSTOMER, OWNER, GROUP = 100, 7, -500
 
@@ -185,11 +188,13 @@ async def test_forged_staff_buttons_do_nothing(env, store, demo):
 async def test_owner_commands(env, store, demo):
     feed, place, session = env
     await feed(message(CUSTOMER, "/admin"))
-    assert "login" not in session.texts(CUSTOMER)[-1]  # not an admin: just the greeting
+    assert "для администраторов" in session.texts(CUSTOMER)[-1]  # not an admin: told why, no link
     await feed(message(OWNER, "/admin"))
     link = session.texts(OWNER)[-1].split()[-1]
     assert link.startswith("https://admin.example.uz/login/")
-    assert store.consume_login(link.rsplit("/", 1)[1])
+    await feed(message(OWNER, "/admin", chat=Chat(id=GROUP, type="supergroup")))
+    assert "в личные сообщения" in session.texts(GROUP)[-1]  # no login links in front of the whole group
+    assert store.consume_login(link.rsplit("/", 1)[1]) == (demo.id, OWNER)
 
     await feed(message(OWNER, "/staff", chat=Chat(id=GROUP, type="supergroup")))
     assert store.cafe(demo.id).staff_chat_id == GROUP
@@ -232,3 +237,76 @@ async def test_two_cafes_one_process(store, demo, settings):
     await dp_a.feed_update(bot_a, message(CUSTOMER, "/orders"))
     assert a.texts(CUSTOMER)[-1].startswith("Заказов пока нет")
     assert not [m for m in a.sent if isinstance(m, SendMessage) and m.chat_id == 9]
+
+
+BOT = User(id=1, is_bot=True, first_name="Demo bot", username="demo_bot")
+
+
+def membership(by: int, joined: bool, chat_id: int = GROUP) -> Update:
+    """The bot added to (or removed from) a group by a user."""
+    was, now = (ChatMemberLeft(user=BOT), ChatMemberMember(user=BOT))
+    return Update(
+        update_id=next(ids),
+        my_chat_member=ChatMemberUpdated(
+            chat=Chat(id=chat_id, type="supergroup", title="Кухня"),
+            from_user=user(by),
+            date=datetime.now(),
+            old_chat_member=was if joined else now,
+            new_chat_member=now if joined else was,
+        ),
+    )
+
+
+async def test_adding_the_bot_to_a_group_makes_it_the_staff_group(env, store, demo):
+    feed, place, session = env
+    await feed(membership(CUSTOMER, joined=True, chat_id=-600))  # someone else's group
+    assert store.cafe(demo.id).staff_chat_id is None and "/staff" in session.texts(-600)[-1]
+    await feed(membership(OWNER, joined=True))
+    assert store.cafe(demo.id).staff_chat_id == GROUP and "приходят сюда" in session.texts(GROUP)[-1]
+    await place()
+    assert "Заказ №1 · Новый" in session.texts(GROUP)[-1]
+
+    upgraded = message(OWNER, chat=Chat(id=GROUP, type="group"))
+    upgraded.message.__dict__["migrate_to_chat_id"] = -100500  # the group became a supergroup with a new id
+    await feed(upgraded)
+    assert store.cafe(demo.id).staff_chat_id == -100500
+
+    await feed(membership(OWNER, joined=False, chat_id=-100500))
+    assert store.cafe(demo.id).staff_chat_id is None
+    assert "личные сообщения" in session.texts(OWNER)[-1]  # the owner knows where orders go now
+    await place()
+    assert "Заказ №2 · Новый" in session.texts(OWNER)[-1]
+
+
+async def test_commands_never_fall_silent(env, store, demo):
+    feed, _, session = env
+    group = Chat(id=GROUP, type="supergroup")
+    await feed(message(CUSTOMER, "/staff", chat=group))
+    assert "для администраторов «Demo Coffee»" in session.texts(GROUP)[-1]
+    assert store.cafe(demo.id).staff_chat_id is None
+    anonymous = Update(
+        update_id=next(ids),
+        message=Message(
+            message_id=next(ids),
+            date=datetime.now(),
+            chat=group,
+            from_user=User(id=1087968824, is_bot=True, first_name="Group", username="GroupAnonymousBot"),
+            sender_chat=group,
+            text="/staff",
+        ),
+    )
+    await feed(anonymous)
+    assert "анонимно" in session.texts(GROUP)[-1]
+    await feed(message(OWNER, "/staff", chat=group))
+    assert store.cafe(demo.id).staff_chat_id == GROUP
+    await feed(message(OWNER, "/staff"))  # in private: orders back to the admins
+    assert store.cafe(demo.id).staff_chat_id is None
+
+
+async def test_a_tap_from_before_a_restart_is_ignored(env):
+    feed, _, session = env
+    session.fail[AnswerCallbackQuery] = TelegramBadRequest(
+        method=AnswerCallbackQuery(callback_query_id="x"),
+        message="Bad Request: query is too old and response timeout expired or query ID is invalid",
+    )
+    await feed(tap(CUSTOMER, "orders"))  # must not raise: there is nothing to answer any more

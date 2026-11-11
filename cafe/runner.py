@@ -1,9 +1,10 @@
-"""One process for all cafes: a polling Dispatcher per cafe bot plus the web admin and the Mini App.
-The cafe list is re-read periodically, so a cafe added with `python -m cafe add` starts without a restart.
-Once a day the database and photos are backed up (backup.py)."""
+"""One process for all cafes: a polling Dispatcher per cafe bot plus the web side (owner admin, operator panel,
+Mini App). The cafe list is re-read every few seconds and right after the operator changes it, so cafes start and
+stop without a restart. Once a day the database and photos are backed up (backup.py)."""
 
 import asyncio
 import logging
+import socket
 from dataclasses import dataclass
 from datetime import date
 
@@ -16,12 +17,16 @@ from aiogram.exceptions import (
     TelegramUnauthorizedError,
 )
 from aiogram.types import BotCommand, MenuButtonWebApp, WebAppInfo
+from aiogram.utils.token import TokenValidationError
 
 from .backup import make_backup
 from .bot import app_url, build
 from .config import Settings
 from .i18n import LANGS
-from .store import Store
+from .models import BOT_STATES
+from .store import OPERATOR, OPS, Store
+from .tokens import bot_profile
+from .tunnel import close_tunnel, is_quick_tunnel, open_tunnel
 from .web import create_app
 
 log = logging.getLogger(__name__)
@@ -41,37 +46,58 @@ class Runner:
         self.store = store
         self.settings = settings
         self.running: dict[int, Running] = {}
-        self.rejected: dict[int, str] = {}  # cafe id → token Telegram refused; retried once the token changes
+        self.problems: dict[int, tuple[str, str]] = {}  # cafe id → (state, token it happened with)
+        self.lock = asyncio.Lock()  # the periodic sync and the operator panel must not start one bot twice
         self.backed_up: date | None = None
 
+    # --- what the web side uses (web.common.Bots) ---
     def bot(self, cafe_id: int) -> Bot | None:
         r = self.running.get(cafe_id)
         return r.bot if r else None
 
-    async def sync(self) -> None:
-        cafes = {c.id: c for c in self.store.cafes()}
-        for cafe_id in list(self.running):
-            if cafe_id not in cafes or cafes[cafe_id].bot_token != self.running[cafe_id].token:
-                await self.stop(cafe_id)
-        for cafe in cafes.values():
-            if cafe.id not in self.running and self.rejected.get(cafe.id) != cafe.bot_token:
-                await self.start(cafe.id, cafe.slug, cafe.bot_token)
+    def state(self, cafe_id: int) -> str:
+        if cafe_id in self.running:
+            return "running"
+        cafe = self.store.cafe(cafe_id)
+        problem = self.problems.get(cafe_id)
+        return problem[0] if cafe and problem and problem[1] == cafe.bot_token else "starting"
 
+    async def check(self, token: str) -> tuple[str, str]:
+        return await bot_profile(token)
+
+    async def sync(self) -> None:
+        async with self.lock:
+            cafes = {c.id: c for c in self.store.cafes()}
+            for cafe_id in list(self.running):
+                if cafe_id not in cafes or cafes[cafe_id].bot_token != self.running[cafe_id].token:
+                    await self.stop(cafe_id)
+            for cafe in cafes.values():
+                rejected = self.problems.get(cafe.id) == ("rejected", cafe.bot_token)
+                if cafe.id not in self.running and not rejected:
+                    await self.start(cafe.id, cafe.slug, cafe.bot_token)
+
+    # --- bots ---
     async def start(self, cafe_id: int, slug: str, token: str) -> None:
-        bot = Bot(token)
+        try:
+            bot = Bot(token)
+        except TokenValidationError:
+            log.error("%s: в базе не токен бота — смените его в панели оператора", slug)
+            self.problems[cafe_id] = ("rejected", token)
+            return
         try:
             me = await bot.get_me()
         except TelegramUnauthorizedError:
-            log.error(
-                "%s: Telegram rejected the bot token — set a new one: python -m cafe token %s <TOKEN>", slug, slug
-            )
-            self.rejected[cafe_id] = token
+            log.error("%s: Telegram не принял токен — смените его в панели оператора", slug)
+            self.problems[cafe_id] = ("rejected", token)
             await bot.session.close()
             return
         except (TelegramNetworkError, TelegramServerError) as e:  # try again on the next sync
-            log.warning("%s: cannot reach Telegram (%s), will retry", slug, e)
+            if self.problems.get(cafe_id) != ("offline", token):
+                log.warning("%s: нет связи с Telegram (%s), пробую снова", slug, e)
+            self.problems[cafe_id] = ("offline", token)
             await bot.session.close()
             return
+        self.problems.pop(cafe_id, None)
         self.store.set_bot_username(cafe_id, me.username)
         try:
             await self.setup_chat(bot, cafe_id)
@@ -80,7 +106,7 @@ class Runner:
         dp = build(self.store, cafe_id, self.settings)
         task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         self.running[cafe_id] = Running(token, bot, dp, task)
-        log.info("%s: @%s is running", slug, me.username)
+        log.info("%s: @%s работает", slug, me.username)
 
     async def setup_chat(self, bot: Bot, cafe_id: int) -> None:
         """The "Menu" button next to the input field opens the Mini App; the command list in both languages."""
@@ -99,6 +125,11 @@ class Runner:
         if url := app_url(self.settings, self.store.cafe(cafe_id)):
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Меню", web_app=WebAppInfo(url=url)))
 
+    async def stop(self, cafe_id: int) -> None:
+        r = self.running.pop(cafe_id)
+        await r.dp.stop_polling()
+        await r.task
+
     async def backup(self) -> None:
         today = date.today()
         if self.backed_up != today:
@@ -110,32 +141,86 @@ class Runner:
             self.backed_up = today
             log.info("backup: %s", path)
 
-    async def stop(self, cafe_id: int) -> None:
-        r = self.running.pop(cafe_id)
-        await r.dp.stop_polling()
-        await r.task
-
-    async def run(self) -> None:
-        if not self.settings.public_url.startswith("https://"):
-            log.warning("PUBLIC_URL is not https: Telegram will not open the Mini App (see README, «Локально»)")
-        await self.sync()
+    def summary(self) -> str:
+        """What the operator sees in the terminal after the start: what works and where to go."""
+        url = self.settings.public_url.rstrip("/")
+        lines = [
+            "─" * 64,
+            "limybot работает. Не закрывайте это окно (остановить — Ctrl+C).",
+            "",
+            "Панель оператора — подключать заведения, смотреть, что работает",
+            "(ссылка одноразовая, на 15 минут; потом вход запомнится в браузере):",
+            f"  {url}/ops/login/{self.store.create_login(OPS, OPERATOR)}",
+            "",
+            "Заведения:",
+        ]
+        for cafe in self.store.cafes():
+            state = self.state(cafe.id)
+            mark = "✅" if state == "running" and cafe.active() else "⚠️ "
+            why = BOT_STATES[state] if state != "running" else ("работает" if cafe.active() else "не принимает заказы")
+            lines.append(f"  {mark} {cafe.name} — @{cafe.bot_username or '?'}: {why}")
         if not self.store.cafes():
-            log.warning("No cafes yet. Add one: python -m cafe add <name> --token <TOKEN> --from <json>")
+            lines.append("  пока нет — откройте панель и нажмите «Подключить заведение»")
+        lines.append("")
+        if url.endswith(".trycloudflare.com"):
+            lines += [
+                f"Витрина открывается через временный адрес {url}",
+                "При каждом запуске он новый: в старых сообщениях бота кнопка «Открыть меню» не сработает —",
+                "отправьте боту /start, и придёт свежая.",
+            ]
+        elif not url.startswith("https://"):
+            lines += [
+                "⚠️  Нет https-адреса: бот отвечает, но Telegram не откроет витрину (меню).",
+                "   На своём компьютере установите cloudflared (Mac: brew install cloudflared) и перезапустите.",
+            ]
+        lines.append("─" * 64)
+        return "\n".join(lines)
+
+    async def run(self, tunnel: asyncio.subprocess.Process | None = None) -> None:
+        await self.sync()
+        print(self.summary(), flush=True)
         while True:
             await self.backup()
             await asyncio.sleep(SYNC_EVERY)
+            if tunnel and tunnel.returncode is not None:
+                log.error("Туннель cloudflared остановился — витрина не открывается. Перезапустите ./run.sh")
+                tunnel = None
             await self.sync()
 
 
+def port_is_free(host: str, port: int) -> bool:
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
 async def serve(settings: Settings) -> None:
+    if not port_is_free(settings.web_host, settings.web_port):
+        raise SystemExit(
+            f"Порт {settings.web_port} занят — похоже, limybot уже запущен в другом окне Терминала.\n"
+            "Закройте его (Ctrl+C в том окне) и запустите снова."
+        )
+    tunnel = None
+    if not settings.public_url or is_quick_tunnel(settings.public_url):
+        found = await open_tunnel(settings.web_port)
+        if found:
+            tunnel, settings.public_url = found
+        else:
+            settings.public_url = f"http://localhost:{settings.web_port}"
     store = Store(settings.db_path)
     runner = Runner(store, settings)
-    app = create_app(store, settings, runner.bot)
-    server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="info"))
-    bots = asyncio.create_task(runner.run())
+    app = create_app(store, settings, runner)
+    server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning"))
+    bots = asyncio.create_task(runner.run(tunnel))
     try:
         await server.serve()  # until Ctrl+C
     finally:
         bots.cancel()
         for cafe_id in list(runner.running):
             await runner.stop(cafe_id)
+        if tunnel:
+            await close_tunnel(tunnel)

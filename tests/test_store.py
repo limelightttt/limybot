@@ -214,11 +214,11 @@ def test_invite_and_login_links(store, demo, monkeypatch):
     assert not store.join(demo.id, code, 8, "Stranger")  # the code works once
     assert store.admins(demo.id) == [(7, "Owner")]
 
-    assert store.consume_login(store.create_login(demo.id, 8)) is None  # not an admin
     token = store.create_login(demo.id, 7)
-    session = store.consume_login(token)
-    assert store.session(session) == (demo.id, 7)
+    assert store.consume_login(token) == (demo.id, 7)
     assert store.consume_login(token) is None  # one-time
+    session = store.create_session(demo.id, 7)
+    assert store.session(session) == (demo.id, 7)
     late = store.create_login(demo.id, 7)
     later = clock.time() + store_module.LOGIN_TTL + 1
     monkeypatch.setattr(store_module.clock, "time", lambda: later)

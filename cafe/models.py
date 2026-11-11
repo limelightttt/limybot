@@ -24,6 +24,13 @@ ACTIVE = sorted({s for flow in FLOW.values() for s in flow[:-1]})
 HANDED_OVER = {flow[-1] for flow in FLOW.values()}
 
 # online providers (payme, click) will be added here; their payment_status flips to "paid" from a callback
+# what the operator sees about a cafe's bot (runner.Runner.state)
+BOT_STATES = {
+    "running": "Работает",
+    "starting": "Запускается",
+    "rejected": "Telegram не принял токен — смените токен",
+    "offline": "Нет связи с Telegram, пробую снова",
+}
 # how the Mini App looks: follow the guest's Telegram theme, or keep the cafe's own light/dark look
 APP_THEMES = {"auto": "Как в Telegram у гостя", "dark": "Тёмная", "light": "Светлая"}
 PAYMENT_METHODS = {"cash": "При получении", "transfer": "Перевод на карту"}

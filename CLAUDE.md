@@ -9,26 +9,33 @@ Telegram Mini App, владелец управляет всем в веб-адм
 
 ```
 cafe/
-  __main__.py   CLI: run (по умолчанию) | add | token | invite | paid | disable | enable | backup | list
-  runner.py     один процесс: Dispatcher на каждое кафе + uvicorn; каждые 15 с сверяет кафе с БД; кнопка «Меню»
-                и команды бота; раз в день бэкап
+  __main__.py   CLI: run (по умолчанию) | ops | add | remove | token | invite | paid | disable | enable | backup | list
+  runner.py     один процесс: Dispatcher на каждое кафе + uvicorn; сверяет кафе с БД каждые 15 с и сразу после правок
+                в панели оператора (sync под lock); состояние ботов для панели; сводка в терминале при старте
+                (ссылка в /ops); проверка занятого порта; кнопка «Меню» и команды бота; раз в день бэкап
+  tunnel.py     пустой PUBLIC_URL (или старый *.trycloudflare.com) → сам запускает cloudflared quick tunnel
+  tokens.py     bot_profile(token) → (username, имя) или TokenError с русским текстом — для CLI, панели, раннера
   bot.py        build(store, cafe_id, settings) -> Dispatcher: приветствие, «Мои заказы», отмена, «Я перевёл»,
-                кнопки персонала, /admin /staff /stats. Общие для бота, админки и Mini App: staff_card,
+                кнопки персонала, /admin /staff /stats, вход/выход бота из групп, миграция группы. Общие для бота, админки и Mini App: staff_card,
                 send_to_staff, refresh_staff, send_to_customer, change_status, mark_paid
   store.py      весь SQL (sqlite3); SCHEMA — текущая схема, MIGRATIONS — шаги для старых баз; методы скоупятся по cafe_id
   models.py     dataclass'ы (Cafe, Item, CartLine, Order, Customer...), STATUSES/FLOW, PAYMENT_*
   i18n.py       тексты гостю ru/uz: BOT_TEXTS (бот), APP_TEXTS (Mini App), STATUS, order_text
   media.py      фото: JPEG ≤1280px + превью ≤480px (thumb), удаление, превью для старых фото
   backup.py     data/backups/limybot-<дата>.zip (база + фото), хранит KEEP=14
-  template.py   pydantic-валидация clients/*.json и импорт в БД (import_cafe)
+  template.py   pydantic-валидация clients/*.json, импорт в БД (import_cafe), список шаблонов, zip-пакеты,
+                connect_cafe — подключение заведения (общее для CLI и панели)
   config.py     Settings из .env: DB_PATH, PUBLIC_URL, WEB_HOST, WEB_PORT, SUPPORT
   web/          FastAPI, модуль на фичу, каждый отдаёт router(web: Web):
-    common.py     Web (store, settings, bot_for, templates, admin-зависимость, page), back()
+    common.py     Web (store, settings, bots: Bots, templates, admin-зависимость, page), back(); Bots — протокол
+                  раннера (bot, state, check, sync), в тестах FakeBots
     orders.py menu.py cafe_settings.py promo.py — админка владельца (templates/admin/*.html, static/style.css)
+    ops.py        панель оператора /ops (templates/ops/*.html): заведения и их статус, подключение, приглашение,
+                  подписка, пауза, смена токена, удаление, вход в админку заведения
     miniapp.py    витрина гостя /app/<slug> (templates/app/index.html, static/app.js, static/app.css)
 clients/        стартовые шаблоны кафе (demo_coffee.json); clients/private/<бренд>/ — пакеты с фото, не в git
-tests/          conftest.py (FakeSession, фикстуры, order(), init_data()), test_store, test_flow, test_miniapp,
-                test_web, schema_v0.sql (схема до миграций — для теста миграции)
+tests/          conftest.py (FakeSession, FakeBots, фикстуры, order(), init_data()), test_store, test_flow,
+                test_miniapp, test_web, test_ops, test_runner, schema_v0.sql (схема до миграций)
 Dockerfile, compose.yaml, Caddyfile — деплой: docker compose up -d, Caddy сам выпускает HTTPS для DOMAIN
 ```
 
@@ -45,6 +52,10 @@ Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`.
 `docker compose exec app python -m cafe ...`.
 
 ## Соглашения и важные решения
+
+- **Продукт не должен путать оператора.** Оператор — не программист: всё ежедневное делается в панели `/ops`, CLI —
+  запасной путь. Бот никогда не молчит на команду (объясняет, почему не сделал), ошибки — по-русски с тем, что
+  делать, без трейсбеков. Никаких инструкций «удалите data» — для этого есть удаление заведения.
 
 - **Один поток.** sqlite3-соединение создаётся в event loop и используется только из него. Все aiogram-фильтры и
   FastAPI-зависимости/эндпоинты — `async def` (синхронные гоняются в потоках → `sqlite3.ProgrammingError`).
@@ -77,9 +88,20 @@ Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`.
   Неактивное кафе не принимает заказы (бот и Mini App), владелец видит баннер в админке.
 - **Профиль гостя** — таблица `customers` (cafe_id, user_id): телефон, последний адрес доставки, язык. Пишется при
   заказе и выборе языка.
-- **Вход в админку:** `/admin` в боте → одноразовая ссылка `PUBLIC_URL/login/<token>` (15 мин) → cookie-сессия
+- **Вход в админку:** `/admin` в боте → одноразовая ссылка `PUBLIC_URL/login/<token>` (15 мин) → cookie `sid`
   на 30 дней. Админы кафе — таблица `admins`, пополняется через инвайт `t.me/<bot>?start=join-<code>`.
   CSRF закрыт `SameSite=Lax`, поэтому изменения — только POST-формы.
+- **Оператор:** `store.OPERATOR = 0` (user id) и `store.OPS = 0` (cafe id сессий панели). Ссылку
+  `/ops/login/<token>` печатает раннер при старте и `cafe ops`; cookie `ops` отдельно от `sid`. «Открыть админку
+  заведения» создаёт `sid`-сессию (cafe, OPERATOR) — `Web.admin` пускает OPERATOR в любое кафе. `/login` не
+  принимает ссылки панели, `/ops/login` — ссылки владельцев (тест `test_only_the_operator_gets_in`).
+- **Группа сотрудников:** бота добавил админ кафе (my_chat_member) → группа становится `staff_chat_id`; добавил
+  чужой — бот просит `/staff`; бота удалили — заказы снова админам в личку, им сообщение; группа стала
+  супергруппой (`migrate_to_chat_id`) — id обновляется. `/admin` `/staff` `/stats` от не-админа и от анонимного
+  админа группы — ответ с объяснением. Нажатия на кнопки, пролежавшие в очереди, пока бот был выключен
+  («query is too old»), глушит `dp.errors`.
+- **https локально:** `PUBLIC_URL` пустой → `tunnel.open_tunnel` (cloudflared), адрес только в памяти процесса.
+  Кнопки web_app в уже отправленных сообщениях после перезапуска ведут на старый адрес — гостю `/start`.
 - **Оформление витрины:** `brand_color`, `logo`, `cover`, `app_theme` (`auto` — тема Telegram гостя, `light`/`dark` —
   своя у всех; `html[data-theme]`, JS красит шапку Telegram в `--bg`). Текст на фирменном цвете — `Cafe.on_brand()`
   (чёрный или белый по контрасту WCAG) → `--on-brand`; `color: #fff` на `--brand` не писать: жёлтый бренд нечитаем.
@@ -118,8 +140,8 @@ Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`.
    админке и `list`; без напоминаний кафе отключаются внезапно, а оператор теряет деньги.
 3. **Click / Payme** в Mini App с автоматическим `paid` по callback. Позже, чем перевод на карту: многие кафе
    работают неофициально, а эквайринг требует ИП/юрлицо и договор. Каждое кафе — свой мерчант, ключи в настройках.
-4. **Панель оператора `/ops`** (вход по Telegram id из `.env`): кафе, статус бота, отклонённые токены, подписка,
-   бэкапы, последние ошибки, уведомление оператору при падении бота. Пока хватает CLI.
+4. **Панель оператора — дальше:** уведомление оператору в Telegram, когда бот заведения упал или токен отклонён;
+   последние ошибки и бэкапы в панели. Сейчас статус видно в панели и в сводке при запуске.
 5. **Админка владельца v2:** заказы без перезагрузки (SSE) и звук нового заказа, дашборд (выручка, топ позиций).
    Сейчас обновление раз в 30 с и основной канал персонала — Telegram.
 6. **Меню на двух языках** (название/описание позиции на узбекском). Сейчас переведён интерфейс, а меню — на том
