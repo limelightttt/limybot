@@ -27,9 +27,12 @@ class FakeSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.sent: list[TelegramMethod] = []
+        self.fail: dict[type, Exception] = {}  # Telegram answers this kind of request with an error
 
     async def make_request(self, bot, method, timeout=None):
         self.sent.append(method)
+        if error := self.fail.get(type(method)):
+            raise error
         chat = Chat(id=getattr(method, "chat_id", None) or 0, type="private")
         if isinstance(method, SendMessage | EditMessageText):
             return Message(message_id=next(ids), date=datetime.now(), chat=chat, text=method.text)
@@ -49,6 +52,31 @@ class FakeSession(BaseSession):
 
     def texts(self, chat: int | None = None) -> list[str]:
         return [m.text for m in self.messages(chat)]
+
+
+class FakeBots:
+    """What the web side sees of the runner: the running bots, their state, token checks."""
+
+    def __init__(self, running: dict[int, Bot] | None = None):
+        self.running = running if running is not None else {}
+        self.tokens: dict[str, tuple[str, str]] = {}  # tokens Telegram "accepts": token → (username, name)
+        self.synced = 0
+
+    def bot(self, cafe_id: int) -> Bot | None:
+        return self.running.get(cafe_id)
+
+    def state(self, cafe_id: int) -> str:
+        return "running" if cafe_id in self.running else "starting"
+
+    async def check(self, token: str) -> tuple[str, str]:
+        from cafe.tokens import TokenError
+
+        if token not in self.tokens:
+            raise TokenError("Telegram не принял токен")
+        return self.tokens[token]
+
+    async def sync(self) -> None:
+        self.synced += 1
 
 
 @pytest.fixture

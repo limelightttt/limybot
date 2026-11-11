@@ -6,10 +6,13 @@
 <title>{% block title %}{{ cafe.name if cafe else "Вход" }}{% endblock %} · админка</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/static/style.css">
-{% if cafe %}<style>:root { --accent: {{ cafe.brand_color }}; }</style>{% endif %}
+{% if cafe %}<style>:root { --accent: {{ cafe.brand_color }}; --on-accent: {{ cafe.on_brand() }}; }</style>{% endif %}
 {% block head %}{% endblock %}
 </head>
 <body>
+{% if cafe and request.cookies.get("ops") %}
+<div class="operator-bar">Вы в админке как оператор · <a href="/ops">← Панель оператора</a></div>
+{% endif %}
 {% if cafe %}
 <header>
   <a class="brand" href="/orders">

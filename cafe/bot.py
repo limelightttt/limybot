@@ -10,10 +10,19 @@ from urllib.parse import urlencode
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.filters import (
+    JOIN_TRANSITION,
+    LEAVE_TRANSITION,
+    ChatMemberUpdatedFilter,
+    Command,
+    CommandObject,
+    CommandStart,
+)
 from aiogram.types import (
     CallbackQuery,
+    ChatMemberUpdated,
     CopyTextButton,
+    ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -207,8 +216,9 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         if command.args and store.join(cafe.id, code, m.from_user.id, m.from_user.full_name):
             return await m.answer(
                 f"Готово, вы администратор «{cafe.name}».\n\n"
-                "/admin — ссылка для входа в веб-админку (меню, цены, фото, заказы)\n"
-                "/staff — отправьте в группе персонала, чтобы заказы приходили туда\n"
+                "Заказы будут приходить вам сюда. Чтобы они шли сотрудникам, добавьте меня в их группу в Telegram — "
+                "дальше я сам буду присылать заказы туда.\n\n"
+                "/admin — вход в админку: меню, цены, фото, заказы\n"
                 "/stats — заказы за сегодня"
             )
         text, markup = start_view(cafe, customer_lang(store, cafe.id, m.from_user))
@@ -288,18 +298,74 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             f"{settings.public_url.rstrip('/')}/login/{token}"
         )
 
+    @r.message(Command("admin"), is_admin)
+    async def admin_in_group(m: Message):
+        await m.reply("Ссылку на админку в группе не показываю — напишите /admin мне в личные сообщения.")
+
     @r.message(Command("staff"), is_admin)
     async def staff(m: Message, cafe: Cafe):
         if m.chat.type == "private":
             store.set_staff_chat(cafe.id, None)
-            return await m.answer("Заказы снова приходят администраторам в личные сообщения.")
+            return await m.answer(
+                "Заказы снова приходят администраторам в личные сообщения.\n"
+                "Чтобы они шли сотрудникам, добавьте меня в их группу."
+            )
         store.set_staff_chat(cafe.id, m.chat.id)
-        await m.answer(f"Заказы «{cafe.name}» теперь приходят в этот чат.")
+        await m.answer(f"Готово: заказы «{cafe.name}» приходят в эту группу.")
 
     @r.message(Command("stats"), is_admin)
     async def stats(m: Message, cafe: Cafe):
         n, total = store.stats(cafe.id, cafe.today())
         await m.answer(f"Сегодня: {n} заказов на {cafe.money(total)}")
+
+    @r.message(Command("admin", "staff", "stats"))
+    async def not_admin(m: Message, cafe: Cafe):
+        """Silence looks like a broken bot: say why the command does nothing."""
+        if m.sender_chat:  # an anonymous group admin: Telegram hides who it is
+            return await m.reply(
+                "Вы пишете анонимно от имени группы, и я не вижу, кто вы. Отключите «Анонимность» в своих правах "
+                "администратора группы или напишите команду мне в личные сообщения."
+            )
+        await m.reply(
+            f"Эта команда — для администраторов «{cafe.name}». Если вы владелец, откройте ссылку-приглашение, "
+            "которую вам прислали при подключении, — после этого я буду вас узнавать."
+        )
+
+    # --- the staff group: adding the bot is all it takes ---
+    @r.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION), F.chat.type.in_({"group", "supergroup"}))
+    async def joined_group(event: ChatMemberUpdated, bot: Bot, cafe: Cafe):
+        if store.is_admin(cafe.id, event.from_user.id):
+            store.set_staff_chat(cafe.id, event.chat.id)
+            text = (
+                f"Здравствуйте! Теперь заказы «{cafe.name}» приходят сюда — с кнопками «Принять», «Готов» и так далее.\n"
+                "Чтобы вернуть заказы в личные сообщения, удалите меня из группы."
+            )
+        else:
+            text = (
+                f"Здравствуйте! Я бот заказов «{cafe.name}». Чтобы заказы приходили в эту группу, "
+                "администратор заведения должен отправить здесь /staff."
+            )
+        with suppress(TelegramBadRequest, TelegramForbiddenError):  # a group where the bot may not write
+            await bot.send_message(event.chat.id, text)
+
+    @r.my_chat_member(ChatMemberUpdatedFilter(LEAVE_TRANSITION))
+    async def left_group(event: ChatMemberUpdated, bot: Bot, cafe: Cafe):
+        if event.chat.id != cafe.staff_chat_id:
+            return
+        store.set_staff_chat(cafe.id, None)
+        for uid, _ in store.admins(cafe.id):
+            with suppress(TelegramBadRequest, TelegramForbiddenError):
+                await bot.send_message(
+                    uid,
+                    f"Меня убрали из группы «{event.chat.title}» — заказы теперь приходят вам в личные сообщения. "
+                    "Чтобы вернуть их сотрудникам, добавьте меня в их группу.",
+                )
+
+    @r.message(F.migrate_to_chat_id)
+    async def group_upgraded(m: Message, cafe: Cafe):
+        """A group that becomes a supergroup gets a new id; the old one stops receiving messages."""
+        if m.chat.id == cafe.staff_chat_id:
+            store.set_staff_chat(cafe.id, m.migrate_to_chat_id)
 
     # anything else typed in private (old keyboards, "hi") gets the greeting with the menu button
     @r.message(F.chat.type == "private", F.text)
@@ -313,6 +379,11 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     async def with_cafe(handler, event, data):
         data["cafe"] = store.cafe(cafe_id)
         return await handler(event, data)
+
+    @dp.errors(F.exception.func(lambda e: isinstance(e, TelegramBadRequest) and "query is too old" in e.message))
+    async def stale_button(_: ErrorEvent):
+        """A tap queued while the bot was off: Telegram no longer takes an answer to it, and nothing is lost."""
+        return True
 
     dp.include_router(r)
     return dp

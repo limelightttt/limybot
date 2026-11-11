@@ -1,0 +1,29 @@
+{% extends "ops/base.html" %}
+{% block title %}Подключить заведение{% endblock %}
+{% block content %}
+<p><a href="/ops">← Заведения</a></p>
+<section class="card">
+  <h1>Подключить заведение</h1>
+  <ol class="steps">
+    <li>У каждого заведения свой бот. Откройте в Telegram <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>
+      → <code>/newbot</code> → имя (как называется заведение) → адрес бота, он должен заканчиваться на <code>bot</code>.</li>
+    <li>BotFather пришлёт токен — длинную строку вида <code>123456789:AAH…</code>. Скопируйте её сюда.</li>
+  </ol>
+  <p class="muted">Лучше, чтобы бота создал сам владелец со своего Telegram и прислал вам токен: тогда бот принадлежит ему.
+    Для демо создайте бота сами.</p>
+  {% if error %}<p class="flash danger">{{ error }}</p>{% endif %}
+  <form method="post" action="/ops/new" enctype="multipart/form-data" class="stack">
+    <label>Токен бота <input name="token" value="{{ token }}" required autocomplete="off" spellcheck="false" placeholder="123456789:AAH…"></label>
+    <label>Меню
+      <select name="template">
+        <option value="">Пустое — заполню в админке</option>
+        {% for path, name in templates %}<option value="{{ path }}" {% if path == chosen %}selected{% endif %}>{{ name }} — {{ path }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>или загрузите архив с меню и фото (.zip)
+      <input type="file" name="pack" accept=".zip,application/zip">
+    </label>
+    <button class="primary">Подключить</button>
+  </form>
+</section>
+{% endblock %}
