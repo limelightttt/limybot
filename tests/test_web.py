@@ -212,6 +212,11 @@ async def test_brand_and_promo_poster(web, store, demo, settings):
     assert "--accent: #0a7d55" in page and f"/media/{thumb(c.logo)}" in page and 'href="/app/demo"' in page
     await client.post("/settings/brand", data={"brand_color": "#0a7d55", "remove_logo": "1"})
     assert store.cafe(demo.id).logo is None and not (settings.media_dir / c.logo).exists()
+    assert 'value="dark"' in (await client.get("/settings")).text
+    await client.post("/settings/brand", data={"brand_color": "#0a7d55", "app_theme": "dark"})
+    assert store.cafe(demo.id).app_theme == "dark"
+    r = await client.post("/settings/brand", data={"brand_color": "#0a7d55", "app_theme": "neon"})
+    assert r.status_code == 422 and store.cafe(demo.id).app_theme == "dark"
 
     store.set_bot_username(demo.id, "demo_coffee_bot")
     poster = (await client.get("/promo")).text

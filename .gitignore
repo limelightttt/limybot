@@ -3,3 +3,6 @@ data/
 .venv/
 __pycache__/
 *.pyc
+
+# client packs with real brands and photos stay local: the repository is public
+clients/private/

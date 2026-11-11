@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from PIL import Image, UnidentifiedImageError
 
 from ..media import drop_photo, save_photo
-from ..models import Cafe
+from ..models import APP_THEMES, Cafe
 from .common import Web, back
 
 
@@ -76,13 +76,14 @@ def router(web: Web) -> APIRouter:
     async def save_brand(
         admin: Admin,
         brand_color: Annotated[str, Form(pattern=r"^#[0-9a-fA-F]{6}$")],
+        app_theme: Annotated[str, Form(pattern="^(" + "|".join(APP_THEMES) + ")$")] = "auto",
         logo: Annotated[UploadFile | None, File()] = None,
         cover: Annotated[UploadFile | None, File()] = None,
         remove_logo: Annotated[bool, Form()] = False,
         remove_cover: Annotated[bool, Form()] = False,
     ):
         cafe, _ = admin
-        store.update_cafe(cafe.id, brand_color=brand_color.lower())
+        store.update_cafe(cafe.id, brand_color=brand_color.lower(), app_theme=app_theme)
         for kind, upload, remove in (("logo", logo, remove_logo), ("cover", cover, remove_cover)):
             data = await upload.read() if upload else b""
             if data:

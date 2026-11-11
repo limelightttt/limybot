@@ -24,6 +24,8 @@ ACTIVE = sorted({s for flow in FLOW.values() for s in flow[:-1]})
 HANDED_OVER = {flow[-1] for flow in FLOW.values()}
 
 # online providers (payme, click) will be added here; their payment_status flips to "paid" from a callback
+# how the Mini App looks: follow the guest's Telegram theme, or keep the cafe's own light/dark look
+APP_THEMES = {"auto": "Как в Telegram у гостя", "dark": "Тёмная", "light": "Светлая"}
 PAYMENT_METHODS = {"cash": "При получении", "transfer": "Перевод на карту"}
 PAYMENT_STATUSES = {"pending": "Не оплачен", "claimed": "Клиент сообщил о переводе", "paid": "Оплачен"}
 
@@ -58,6 +60,7 @@ class Cafe:
     card_holder: str
     paid_until: date | None  # set by the operator: python -m cafe paid <name> <date>
     enabled: bool
+    app_theme: str  # one of APP_THEMES
 
     def now(self) -> datetime:
         return datetime.now(ZoneInfo(self.timezone))
@@ -84,6 +87,14 @@ class Cafe:
 
     def money(self, amount: int) -> str:
         return money(amount, self.currency)
+
+    def on_brand(self) -> str:
+        """Text colour for buttons in the brand colour: whichever of near-black and white contrasts more (WCAG)."""
+        channels = [int(self.brand_color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        r, g, b = (c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
+        luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        dark = 0.008  # luminance of #141414
+        return "#141414" if (luminance + 0.05) / (dark + 0.05) > 1.05 / (luminance + 0.05) else "#ffffff"
 
     def invite_link(self) -> str | None:
         if self.invite_code and self.bot_username:

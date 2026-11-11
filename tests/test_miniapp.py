@@ -47,6 +47,7 @@ async def test_page_has_the_menu_and_the_brand(app, store, demo):
     store.update_cafe(demo.id, brand_color="#0a7d55")
     r = await client.get("/app/demo")
     assert r.status_code == 200 and "--brand: #0a7d55" in r.text and "telegram-web-app.js" in r.text
+    assert 'data-theme="auto"' in r.text and "--on-brand: #ffffff" in r.text
     data = page_data(r.text)
     names = [it["name"] for c in data["menu"] for it in c["items"]]
     assert "Латте" in names and "Круассан" not in names  # the stop-list is hidden
@@ -182,3 +183,10 @@ async def test_language_choice_reaches_the_bot(app, store, demo):
     await client.post("/app/demo/orders", json=body(pick(store, demo.id, "Эспрессо"), lang="uz"), headers=signed())
     assert "✅ №1 buyurtma «Demo Coffee»ga yuborildi" in session.texts(CUSTOMER)[-1]
     assert "18 000 soʻm" in session.texts(CUSTOMER)[-1]
+
+
+async def test_cafe_theme_and_light_brand(app, store, demo):
+    client, _, _ = app
+    store.update_cafe(demo.id, brand_color="#ffc72c", app_theme="dark")
+    r = await client.get("/app/demo")
+    assert 'data-theme="dark"' in r.text and "--on-brand: #141414" in r.text  # dark text on a yellow button

@@ -26,7 +26,7 @@ cafe/
     common.py     Web (store, settings, bot_for, templates, admin-зависимость, page), back()
     orders.py menu.py cafe_settings.py promo.py — админка владельца (templates/admin/*.html, static/style.css)
     miniapp.py    витрина гостя /app/<slug> (templates/app/index.html, static/app.js, static/app.css)
-clients/        стартовые шаблоны кафе (demo_coffee.json)
+clients/        стартовые шаблоны кафе (demo_coffee.json); clients/private/<бренд>/ — пакеты с фото, не в git
 tests/          conftest.py (FakeSession, фикстуры, order(), init_data()), test_store, test_flow, test_miniapp,
                 test_web, schema_v0.sql (схема до миграций — для теста миграции)
 Dockerfile, compose.yaml, Caddyfile — деплой: docker compose up -d, Caddy сам выпускает HTTPS для DOMAIN
@@ -80,6 +80,12 @@ Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`.
 - **Вход в админку:** `/admin` в боте → одноразовая ссылка `PUBLIC_URL/login/<token>` (15 мин) → cookie-сессия
   на 30 дней. Админы кафе — таблица `admins`, пополняется через инвайт `t.me/<bot>?start=join-<code>`.
   CSRF закрыт `SameSite=Lax`, поэтому изменения — только POST-формы.
+- **Оформление витрины:** `brand_color`, `logo`, `cover`, `app_theme` (`auto` — тема Telegram гостя, `light`/`dark` —
+  своя у всех; `html[data-theme]`, JS красит шапку Telegram в `--bg`). Текст на фирменном цвете — `Cafe.on_brand()`
+  (чёрный или белый по контрасту WCAG) → `--on-brand`; `color: #fff` на `--brand` не писать: жёлтый бренд нечитаем.
+- **Шаблон заведения** (`template.py`) может нести оформление и фото: пути относительно JSON, `load_template`
+  проверяет, что файлы есть, `import_cafe(..., media_dir)` прогоняет их через `media.save_photo`.
+- **Не только кофейни.** Тексты гостю нейтральны для любого общепита (бургерные, донерные): без ☕ и «без сахара».
 - **Фото** (позиции, логотип, обложка) — `media.save_photo`: JPEG ≤1280px + `_s.jpg` ≤480px, прозрачность → белый.
 - **Миграции:** `SCHEMA` — всегда актуальная схема (новая база создаётся из неё). Любое изменение существующей
   базы — новый шаг в конце `MIGRATIONS` (пишем `pragma user_version`), старые шаги не править.

@@ -17,7 +17,6 @@ from pathlib import Path
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
-from pydantic import ValidationError
 
 from .backup import make_backup
 from .config import Settings
@@ -94,11 +93,12 @@ def main() -> None:
             raise SystemExit("Имя кафе: латиница в нижнем регистре, цифры, _ и -")
         try:
             template = load_template(args.template) if args.template else Template(name=args.name)
-        except ValidationError as e:
+        except ValueError as e:  # also pydantic's ValidationError
             raise SystemExit(f"{args.template}: {e}")
         username = check_token(args.token)
         try:
-            cafe_id = import_cafe(store, args.name, args.token, template)
+            settings.media_dir.mkdir(parents=True, exist_ok=True)
+            cafe_id = import_cafe(store, args.name, args.token, template, settings.media_dir)
         except sqlite3.IntegrityError:
             raise SystemExit("Кафе с таким именем или токеном уже есть: python -m cafe list")
         store.set_bot_username(cafe_id, username)
