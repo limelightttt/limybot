@@ -40,6 +40,11 @@ def buttons(m) -> list:
     return [b for row in m.reply_markup.inline_keyboard for b in row] if m.reply_markup else []
 
 
+def new_messages(session: FakeSession, chat: int) -> list[str]:
+    """Messages that arrived (with a notification), not edits of earlier ones."""
+    return [m.text for m in session.sent if isinstance(m, SendMessage) and m.chat_id == chat]
+
+
 def alerts(session: FakeSession) -> list[str]:
     return [m.text for m in session.sent if isinstance(m, AnswerCallbackQuery) and m.text]
 
@@ -78,10 +83,10 @@ async def test_delivery_steps_and_texts(env, store, demo):
     card = session.messages(OWNER)[-1]
     assert "Заказ №1 · Новый" in card.text and "🛵 Доставка: Чиланзар 9" in card.text
     assert [(b.text, b.style) for b in buttons(card)] == [("✅ Принять", "success"), ("✖️ Отменить", "danger")]
-    before = len(session.texts(CUSTOMER))
+    before = len(new_messages(session, CUSTOMER))
     for status in ("accepted", "cooking", "courier", "delivered"):
         await feed(tap(OWNER, f"st:{o.id}:{status}"))
-    told = session.texts(CUSTOMER)[before:]
+    told = new_messages(session, CUSTOMER)[before:]  # the order message itself is edited in place, see below
     assert told == [
         "Заказ №1 принят ✅ Скоро начнём готовить.",
         "Заказ №1 готовится 👨‍🍳",
@@ -118,15 +123,24 @@ async def test_customer_cancels_while_new(env, store, demo):
     assert store.order(demo.id, o.id).status == "cancelled" and alerts(session)[-1] == "Заказ №1 отменён"
     staff = session.messages(OWNER)
     assert "Заказ №1 · Отменён" in staff[-2].text and not staff[-2].reply_markup  # the card follows
-    assert staff[-1].text == "❗️ Клиент отменил заказ №1" and staff[-1].reply_parameters  # a reply: staff get a ping
+    assert staff[-1].text == "❗️ Гость отменил заказ №1 — не готовьте его" and staff[-1].reply_parameters  # a ping
     assert "Статус: Отменён" in session.texts(CUSTOMER)[-1] and not buttons(session.messages(CUSTOMER)[-1])
 
-    accepted = await place()
+    accepted = await place()  # accepted, not cooking yet: the guest may still change their mind
     await feed(tap(OWNER, f"st:{accepted.id}:accepted"))
-    await feed(tap(CUSTOMER, f"oc:{accepted.id}"))  # the button is still on the customer's screen
-    assert (
-        alerts(session)[-1].startswith("Заказ уже готовят") and store.order(demo.id, accepted.id).status == "accepted"
-    )
+    edited = session.messages(CUSTOMER)[-2]  # the order message follows the status, "Cancel" is still there
+    assert isinstance(edited, EditMessageText) and "Статус: Принят" in edited.text
+    assert [b.callback_data for b in buttons(edited)] == [f"oc:{accepted.id}"]
+    await feed(tap(CUSTOMER, f"oc:{accepted.id}"))
+    assert store.order(demo.id, accepted.id).status == "cancelled"
+
+    cooking = await place()
+    await feed(tap(OWNER, f"st:{cooking.id}:accepted"))
+    await feed(tap(OWNER, f"st:{cooking.id}:cooking"))
+    edited = [m for m in session.messages(CUSTOMER) if isinstance(m, EditMessageText)][-1]
+    assert "Статус: Готовится" in edited.text and not buttons(edited)  # the button is gone once cooking starts
+    await feed(tap(CUSTOMER, f"oc:{cooking.id}"))  # an old screen, or a forged tap
+    assert alerts(session)[-1].startswith("Заказ уже готовят") and store.order(demo.id, cooking.id).status == "cooking"
 
 
 async def test_my_orders_show_the_last_five(env, store, demo):
@@ -140,12 +154,13 @@ async def test_my_orders_show_the_last_five(env, store, demo):
     assert "<b>№6</b>" in view.text and "<b>№2</b>" in view.text and "<b>№1</b>" not in view.text
     assert "№6</b> · " in view.text and " · Принят\n" in view.text
     rows = view.reply_markup.inline_keyboard
-    assert [b.text for b in rows[0]] == ["🔁 Повторить №6"]  # accepted: no cancel
+    assert [b.text for b in rows[0]] == ["🔁 Повторить №6", "✖️ Отменить №6"]  # accepted: still cancellable
     assert rows[0][0].web_app.url == f"https://admin.example.uz/app/demo?repeat={o.id}"
     assert [b.text for b in rows[1]] == ["🔁 Повторить №5", "✖️ Отменить №5"]
 
     await feed(tap(CUSTOMER, rows[1][1].callback_data))
-    assert " · Отменён\n" in session.texts(CUSTOMER)[-1]  # the list is redrawn in place
+    assert " · Отменён\n" in session.texts(CUSTOMER)[-2]  # the list is redrawn in place…
+    assert "Статус: Отменён" in session.texts(CUSTOMER)[-1]  # …and so is that order's own message
     await feed(tap(200, "orders"))
     assert session.texts(200)[-1].startswith("Заказов пока нет")
 
@@ -163,7 +178,7 @@ async def test_card_transfer(env, store, demo):
 
     await feed(tap(CUSTOMER, f"paid:{o.id}"))
     assert store.order(demo.id, o.id).payment_status == "claimed"
-    assert session.texts(OWNER)[-1] == "💳 Клиент сообщил о переводе по заказу №1 — проверьте"
+    assert session.texts(OWNER)[-1] == "💳 Гость сообщил о переводе 18 000 сум по заказу №1 — проверьте поступление"
     card = session.messages(OWNER)[-2]
     assert "Клиент сообщил о переводе" in card.text and "💳 Оплата получена" in [b.text for b in buttons(card)]
     await feed(tap(OWNER, f"pay:{o.id}"))
@@ -264,7 +279,7 @@ async def test_adding_the_bot_to_a_group_makes_it_the_staff_group(env, store, de
     await feed(membership(CUSTOMER, joined=True, chat_id=-600))  # someone else's group
     assert store.cafe(demo.id).staff_chat_id is None and "/staff" in session.texts(-600)[-1]
     await feed(membership(OWNER, joined=True))
-    assert store.cafe(demo.id).staff_chat_id == GROUP and "приходят сюда" in session.texts(GROUP)[-1]
+    assert store.cafe(demo.id).staff_chat_id == GROUP and "сюда приходят все заказы" in session.texts(GROUP)[-1]
     await place()
     assert "Заказ №1 · Новый" in session.texts(GROUP)[-1]
 
@@ -312,3 +327,62 @@ async def test_a_tap_from_before_a_restart_is_ignored(env):
         message="Bad Request: query is too old and response timeout expired or query ID is invalid",
     )
     await feed(tap(CUSTOMER, "orders"))  # must not raise: there is nothing to answer any more
+
+
+async def test_groups_for_couriers_and_finance(env, store, demo):
+    """Kitchen, couriers and money in separate groups: each sees its part and presses only its buttons."""
+    feed, place, session = env
+    store.update_cafe(demo.id, card_number="8600 1234 5678 9012", card_holder="Ali")
+    kitchen, couriers, money = GROUP, -700, -800
+    await feed(membership(OWNER, joined=True))  # the first group: the kitchen, no questions
+    assert store.cafe(demo.id).staff_chat_id == kitchen
+    await feed(membership(OWNER, joined=True, chat_id=couriers))  # the next one: which is it?
+    ask = session.messages(couriers)[-1]
+    assert "Для чего эта группа" in ask.text and [b.callback_data for b in buttons(ask)] == [
+        "role:staff",
+        "role:courier",
+        "role:finance",
+    ]
+    await feed(tap(CUSTOMER, "role:courier", chat=Chat(id=couriers, type="supergroup")))
+    assert alerts(session)[-1].startswith("Выбрать может только администратор")
+    await feed(tap(OWNER, "role:courier", chat=Chat(id=couriers, type="supergroup")))
+    assert store.cafe(demo.id).courier_chat_id == couriers and "группа курьеров" in session.texts(couriers)[-1]
+    await feed(message(OWNER, "/finance", chat=Chat(id=money, type="supergroup")))
+    assert store.cafe(demo.id).finance_chat_id == money
+
+    o = await place(method="delivery", address="Чиланзар 9", payment_method="transfer")
+    assert "Заказ №1 · Новый" in session.texts(kitchen)[-1]
+    finance_card = session.messages(money)[-1]
+    assert finance_card.text.startswith("💳 Заказ №1") and [b.text for b in buttons(finance_card)] == [
+        "💳 Оплата получена"
+    ]
+    assert "Оплата получена" not in str(buttons(session.messages(kitchen)[-1]))  # money is checked by finance
+    assert len(new_messages(session, couriers)) == 1  # only the question: nothing for couriers until it is accepted
+
+    await feed(tap(CUSTOMER, f"st:{o.id}:accepted", chat=Chat(id=couriers, type="supergroup")))
+    assert store.order(demo.id, o.id).status == "new"  # a courier cannot accept for the kitchen
+    await feed(tap(100500, f"st:{o.id}:accepted", chat=Chat(id=kitchen, type="supergroup")))
+    courier_card = session.messages(couriers)[-1]
+    assert courier_card.text.startswith("🛵 Доставка №1") and "Чиланзар 9" in courier_card.text
+    assert "ещё не подтверждён" in courier_card.text and buttons(courier_card) == []  # nothing to press yet
+
+    await feed(tap(CUSTOMER, f"paid:{o.id}"))  # the guest says they paid: finance is pinged, not the kitchen
+    assert "проверьте поступление" in session.texts(money)[-1]
+    assert not any("проверьте поступление" in t for t in session.texts(kitchen))
+    await feed(tap(100501, f"pay:{o.id}", chat=Chat(id=kitchen, type="supergroup")))
+    assert store.order(demo.id, o.id).payment_status == "claimed"  # the kitchen cannot confirm money
+    await feed(tap(100501, f"pay:{o.id}", chat=Chat(id=money, type="supergroup")))
+    assert store.order(demo.id, o.id).payment_status == "paid"
+
+    await feed(tap(100500, f"st:{o.id}:cooking", chat=Chat(id=kitchen, type="supergroup")))
+    courier_card = [m for m in session.messages(couriers) if isinstance(m, EditMessageText)][-1]
+    assert "с гостя ничего не брать" in courier_card.text
+    assert [b.text for b in buttons(courier_card)] == ["🛵 Передан курьеру"]
+    await feed(tap(100502, f"st:{o.id}:courier", chat=Chat(id=couriers, type="supergroup")))
+    await feed(tap(100502, f"st:{o.id}:delivered", chat=Chat(id=couriers, type="supergroup")))
+    assert store.order(demo.id, o.id).status == "delivered"
+
+    await feed(membership(OWNER, joined=False, chat_id=couriers))
+    assert store.cafe(demo.id).courier_chat_id is None and "группы курьеров больше нет" in session.texts(OWNER)[-1]
+    await feed(message(OWNER, "/finance"))  # in private: that group is switched off
+    assert store.cafe(demo.id).finance_chat_id is None and "переводы подтверждают на кухне" in session.texts(OWNER)[-1]

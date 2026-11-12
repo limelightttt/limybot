@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .billing import Payment, extend
 from .delivery import fee as delivery_fee
-from .models import ACTIVE, HANDED_OVER, Cafe, CartLine, Category, Customer, Item, ModifierGroup, Option, Order
+from .models import ACTIVE, HANDED_OVER, ROLES, Cafe, CartLine, Category, Customer, Item, ModifierGroup, Option, Order
 
 # The current shape of the database: a new database is created from it and marked as up to date.
 SCHEMA = """
@@ -23,7 +23,7 @@ create table cafes (
   staff_chat_id integer, invite_code text, brand_color text not null default '#8b5e3c', logo text, cover text,
   card_number text not null default '', card_holder text not null default '', paid_until text,
   enabled integer not null default 1, app_theme text not null default 'auto', lat real, lon real,
-  delivery_zones text not null default '[]'
+  delivery_zones text not null default '[]', courier_chat_id integer, finance_chat_id integer
 );
 create table admins (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null,
@@ -57,7 +57,7 @@ create table orders (
   comment text, lines text not null, subtotal integer not null, delivery_fee integer not null,
   total integer not null, status text not null default 'new',
   payment_method text not null default 'cash', payment_status text not null default 'pending',
-  created_at text not null, lat real, lon real, unique (cafe_id, number)
+  created_at text not null, lat real, lon real, customer_message_id integer, unique (cafe_id, number)
 );
 create table staff_messages (
   order_id integer not null references orders on delete cascade, chat_id integer not null,
@@ -130,6 +130,12 @@ MIGRATIONS = [
     alter table orders add column lon real;
     alter table customers add column lat real;
     alter table customers add column lon real;
+    """,
+    # 5: groups for couriers and for money next to the kitchen's; the guest's order message is kept up to date
+    """
+    alter table cafes add column courier_chat_id integer;
+    alter table cafes add column finance_chat_id integer;
+    alter table orders add column customer_message_id integer;
     """,
 ]
 
@@ -272,9 +278,20 @@ class Store:
             self.db.execute("delete from cafes where id = ?", (cafe_id,))  # the rest cascades
         return photos + [p for p in (cafe.logo, cafe.cover) if p]
 
-    def set_staff_chat(self, cafe_id: int, chat_id: int | None) -> None:
+    def set_staff_chat(self, cafe_id: int, chat_id: int | None, role: str = "staff") -> None:
+        """The group for a role (models.ROLES): staff — the kitchen, courier, finance. One group, one role."""
+        column = ROLES[role][0]
         with self.db:
-            self.db.execute("update cafes set staff_chat_id = ? where id = ?", (chat_id, cafe_id))
+            if chat_id is not None:  # a group moved to another role leaves the old one
+                for other, _ in ROLES.values():
+                    self.db.execute(f"update cafes set {other} = null where id = ? and {other} = ?", (cafe_id, chat_id))
+            self.db.execute(f"update cafes set {column} = ? where id = ?", (chat_id, cafe_id))
+
+    def replace_chat(self, cafe_id: int, old: int, new: int) -> None:
+        """A group became a supergroup and got a new id: whatever role it had stays."""
+        with self.db:
+            for column, _ in ROLES.values():
+                self.db.execute(f"update cafes set {column} = ? where id = ? and {column} = ?", (new, cafe_id, old))
 
     def set_cafe_image(self, cafe_id: int, kind: str, name: str | None) -> str | None:
         """Logo or cover; returns the previous file name so the caller can delete it."""
@@ -835,11 +852,11 @@ class Store:
                 )
 
     def cancel_by_customer(self, cafe_id: int, user_id: int, order_id: int) -> bool:
-        """Only while nobody has accepted the order; a single statement, so it cannot race the staff's button."""
+        """Only until cooking starts (models.CUSTOMER_CANCELLABLE); one statement, so it cannot race the staff's button."""
         with self.db:
             cur = self.db.execute(
                 "update orders set status = 'cancelled'"
-                " where id = ? and cafe_id = ? and user_id = ? and status = 'new'",
+                " where id = ? and cafe_id = ? and user_id = ? and status in ('new', 'accepted')",
                 (order_id, cafe_id, user_id),
             )
         return cur.rowcount == 1
@@ -862,6 +879,13 @@ class Store:
                 (order_id, cafe_id),
             )
         return cur.rowcount == 1
+
+    def set_customer_message(self, cafe_id: int, order_id: int, message_id: int) -> None:
+        with self.db:
+            self.db.execute(
+                "update orders set customer_message_id = ? where id = ? and cafe_id = ?",
+                (message_id, order_id, cafe_id),
+            )
 
     def add_staff_message(self, order_id: int, chat_id: int, message_id: int) -> None:
         with self.db:

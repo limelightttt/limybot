@@ -14,7 +14,9 @@
     lang: user && user.language_code === "uz" ? "uz" : "ru",
     view: "menu", // menu | cart | done
     cart: loadCart(),
-    form: { method: "pickup", phone: "", address: "", comment: "", payment: D.payments[0], point: null },
+    // street: the line under the pin (fills itself from the map until the guest edits it), details: entrance, flat…
+    form: { method: "pickup", phone: "", street: "", details: "", comment: "", payment: D.payments[0], point: null },
+    streetAuto: true,
     sending: false,
     done: null,
   };
@@ -164,27 +166,73 @@
   function setPoint(point) {
     state.form.point = point;
     updateQuote();
+    suggestStreet(point);
   }
+  // the street and house under the pin (server: geocode.py) — only into a line the guest has not typed themselves
+  let lookup = 0;
+  let lookupTimer;
+  function suggestStreet(point) {
+    clearTimeout(lookupTimer);
+    if (!initData || !state.streetAuto) return;
+    const input = $("[name=street]");
+    if (input) input.placeholder = T("street_looking");
+    const mine = ++lookup;
+    lookupTimer = setTimeout(() => {
+      api("GET", `/where?lat=${point[0].toFixed(6)}&lon=${point[1].toFixed(6)}&lang=${state.lang}`)
+        .then((res) => {
+          if (mine !== lookup || !state.streetAuto) return; // the pin moved again, or the guest started typing
+          state.form.street = res.address || "";
+          const field = $("[name=street]");
+          if (field) field.value = state.form.street;
+        })
+        .catch(() => {})
+        .finally(() => {
+          const field = $("[name=street]");
+          if (field && mine === lookup) field.placeholder = T("street_hint");
+        });
+    }, 500);
+  }
+  let locating = false;
   function locate() {
+    if (locating) return;
+    const buttons = [...document.querySelectorAll("[data-locate]")];
+    const busy = (on) => {
+      locating = on;
+      buttons.forEach((b) => {
+        b.textContent = T(on ? "locating" : "locate");
+        b.disabled = on;
+      });
+    };
+    const done = (message) => {
+      busy(false);
+      if (message) toast(message);
+    };
     const go = (lat, lon) => {
+      done();
       if (map) map.jumpTo({ center: [lon, lat], zoom: 17 }, { byUs: true });
       else setPoint([lat, lon]);
       haptic("light");
     };
+    busy(true);
+    setTimeout(() => locating && done(T("locate_failed")), 15000); // no answer at all: never leave it stuck
     const browser = () =>
       navigator.geolocation
         ? navigator.geolocation.getCurrentPosition(
             (pos) => go(pos.coords.latitude, pos.coords.longitude),
-            () => toast(T("locate_failed")),
-            { enableHighAccuracy: true, timeout: 10000 },
+            (err) => done(T(err && err.code === 1 ? "locate_denied" : "locate_failed")),
+            { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
           )
-        : toast(T("locate_failed"));
+        : done(T("locate_failed"));
     const lm = tg && tg.isVersionAtLeast && tg.isVersionAtLeast("8.0") && tg.LocationManager;
     if (!lm) return browser();
-    lm.init(() => {
-      if (!lm.isLocationAvailable) return browser();
-      lm.getLocation((loc) => (loc ? go(loc.latitude, loc.longitude) : toast(T("locate_failed"))));
-    });
+    const ask = () =>
+      lm.getLocation((loc) => {
+        if (loc) return go(loc.latitude, loc.longitude);
+        // refused now or earlier: Telegram can open its settings, but only on a tap — so say where to look
+        done(T(lm.isAccessRequested && !lm.isAccessGranted ? "locate_denied" : "locate_failed"));
+      });
+    if (lm.isInited) return lm.isLocationAvailable ? ask() : browser();
+    lm.init(() => (lm.isLocationAvailable ? ask() : browser()));
   }
 
   // --- views ---
@@ -266,7 +314,8 @@
       ? `<div class="field"><span>${T("map_title")}</span>
           ${mapFailed ? `<p class="hint warn">${T("map_failed")}</p><button type="button" class="link" data-locate>${T("locate")}</button>` : `<div id="map-slot"></div>`}
           <p class="hint${q.ok ? "" : " warn"}" id="quote">${quoteText(q)}</p></div>
-        <label>${T("address")}<textarea name="address" rows="2" placeholder="${T("address_hint")}">${esc(f.address)}</textarea></label>`
+        <label>${T("street")}<input name="street" autocomplete="street-address" value="${esc(f.street)}" placeholder="${T("street_hint")}"></label>
+        <label>${T("details")}<input name="details" value="${esc(f.details)}" placeholder="${T("details_hint")}"></label>`
       : "";
     const share = tg && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9")
       ? `<button type="button" class="link" data-share>${T("share_phone")}</button>` : "";
@@ -365,6 +414,15 @@
 
   async function submit() {
     const f = state.form;
+    // what is missing is said here, at its field, instead of after a round trip
+    const missing = f.method === "delivery" && !f.street.trim() ? ["street", "error_address"]
+      : (f.phone.match(/\d/g) || []).length < 7 ? ["phone", "error_phone"] : null;
+    if (missing) {
+      toast(T(missing[1]));
+      const field = $(`[name=${missing[0]}]`);
+      if (field) field.focus();
+      return;
+    }
     state.sending = true;
     render();
     try {
@@ -372,7 +430,7 @@
         lines: state.cart,
         method: f.method,
         phone: f.phone,
-        address: f.method === "delivery" ? f.address : "",
+        address: f.method === "delivery" ? [f.street.trim(), f.details.trim()].filter(Boolean).join(", ") : "",
         lat: f.method === "delivery" && f.point ? f.point[0] : null,
         lon: f.method === "delivery" && f.point ? f.point[1] : null,
         comment: f.comment,
@@ -467,6 +525,7 @@
   // typing must not re-render (it would drop the focus): just remember the values
   document.addEventListener("input", (e) => {
     if (e.target.name in state.form) state.form[e.target.name] = e.target.value;
+    if (e.target.name === "street") state.streetAuto = !e.target.value.trim(); // typed: the map no longer overwrites it
   });
 
   if (tg) {
@@ -489,7 +548,9 @@
       .then((me) => {
         state.lang = me.lang;
         state.form.phone ||= me.phone || "";
-        state.form.address ||= me.address || "";
+        if (me.address && !state.form.street) {
+          state.form.street = me.address; // last time's address; moving the pin elsewhere replaces it
+        }
         state.form.point ||= me.point;
         if (me.point && map) map.jumpTo({ center: [me.point[1], me.point[0]], zoom: 16 });
         if (me.repeat) {
