@@ -427,6 +427,13 @@ class Store:
         )
         return token
 
+    def peek_login(self, token: str) -> tuple[int, int] | None:
+        """Who a link is for, without using it up: link previews (Telegram, WhatsApp) open links before people do."""
+        row = self.db.execute(
+            "select cafe_id, user_id from login_links where token = ? and expires > ?", (token, int(clock.time()))
+        ).fetchone()
+        return (row[0], row[1]) if row else None
+
     def consume_login(self, token: str) -> tuple[int, int] | None:
         """A one-time link → (cafe id, user id) it was made for; the link stops working."""
         with self.db:

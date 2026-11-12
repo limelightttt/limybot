@@ -29,7 +29,7 @@ def ops(store, demo, settings, fake):
 
 
 async def login(client, store):
-    r = await client.get(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
+    r = await client.post(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
     assert r.status_code == 303 and r.headers["location"] == "/ops"
 
 
@@ -60,10 +60,10 @@ async def test_only_the_operator_gets_in(ops, store, demo):
     r = await client.get("/ops")
     assert r.status_code == 401 and "./run.sh ops" in r.text
     owner_link = store.create_login(demo.id, OWNER)
-    assert (await client.get(f"/ops/login/{owner_link}")).status_code == 401  # an owner's /admin link is not for /ops
+    assert (await client.post(f"/ops/login/{owner_link}")).status_code == 401  # an owner's /admin link is not for /ops
     ops_link = store.create_login(OPS, OPERATOR)
-    assert (await client.get(f"/login/{ops_link}")).status_code == 401  # and the other way round
-    await client.get(f"/login/{store.create_login(demo.id, OWNER)}")
+    assert (await client.post(f"/login/{ops_link}")).status_code == 401  # and the other way round
+    await client.post(f"/login/{store.create_login(demo.id, OWNER)}")
     assert (await client.get("/ops")).status_code == 401  # an owner's session does not open /ops
     await login(client, store)
     page = (await client.get("/ops")).text
@@ -205,7 +205,14 @@ async def test_delete_a_cafe(ops, store, demo, settings):
 async def test_login_by_a_localhost_link_works_in_any_browser(ops, store, settings):
     client, _ = ops
     local = httpx.AsyncClient(transport=client._transport, base_url="http://localhost:8000")
-    r = await local.get(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
+    r = await local.post(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
     assert "secure" not in r.headers["set-cookie"].lower()  # Safari drops https-only cookies on http://localhost
-    r = await client.get(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
+    r = await client.post(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
     assert "secure" in r.headers["set-cookie"].lower()
+
+
+async def test_the_panel_link_survives_a_preview(ops, store):
+    client, _ = ops
+    token = store.create_login(OPS, OPERATOR)
+    assert "Войти" in (await client.get(f"/ops/login/{token}")).text
+    assert (await client.post(f"/ops/login/{token}")).headers["location"] == "/ops"

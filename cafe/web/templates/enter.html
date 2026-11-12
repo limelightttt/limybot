@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Вход · limybot</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main>
+  <section class="card" style="text-align:center">
+    <h1>{{ title }}</h1>
+    <!-- the link is used up only by this form: previews that messengers fetch with GET leave it working -->
+    <form method="post"><button class="primary" style="width:100%">Войти</button></form>
+  </section>
+</main>
+<script>document.forms[0].submit();</script>
+</body>
+</html>

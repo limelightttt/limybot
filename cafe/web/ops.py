@@ -88,6 +88,12 @@ def router(web: Web) -> APIRouter:
 
     # --- login ---
     @r.get("/login/{token}")
+    async def login_page(request: Request, token: str):
+        if store.peek_login(token) != (OPS, OPERATOR):  # see /login: previews must not use the link up
+            raise OpsLoginRequired
+        return web.templates.TemplateResponse(request, "enter.html", {"title": "Панель оператора"})
+
+    @r.post("/login/{token}")
     async def login(request: Request, token: str):
         if store.consume_login(token) != (OPS, OPERATOR):
             raise OpsLoginRequired

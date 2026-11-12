@@ -87,7 +87,7 @@ def client(store, demo, settings, fake):
 
 async def test_reports_page_and_download(client, store, week):
     cafe, other = week
-    await client.get(f"/login/{store.create_login(cafe.id, OWNER)}")
+    await client.post(f"/login/{store.create_login(cafe.id, OWNER)}")
     page = (await client.get("/reports")).text
     assert "211 000 сум" in page and "Переводы без подтверждения" in page and "69 000 сум" in page
     assert "Эспрессо" in page and "Отменено (1)" in page
@@ -99,7 +99,7 @@ async def test_reports_page_and_download(client, store, week):
     r = await client.get(f"/reports.csv?since={today}&until={today}")
     assert r.headers["content-disposition"].startswith('attachment; filename="demo-') and "Юнусабад" in r.text
     store.join(other.id, store.new_invite(other.id), OWNER, "Owner")
-    await client.get(f"/login/{store.create_login(other.id, OWNER)}")
+    await client.post(f"/login/{store.create_login(other.id, OWNER)}")
     assert "Эспрессо" not in (await client.get("/reports?p=week")).text  # another cafe sees only its own
 
 

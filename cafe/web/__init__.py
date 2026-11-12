@@ -60,6 +60,14 @@ def create_app(store: Store, settings: Settings, bots: Bots) -> FastAPI:
         return templates.TemplateResponse(request, "ops/login.html", {}, status_code=401)
 
     @app.get("/login/{token}")
+    async def login_page(request: Request, token: str):
+        """Opening the link only shows "Войти" (sent by itself in a browser): a messenger's preview must not use it up."""
+        who = store.peek_login(token)
+        if not who or who[0] == OPS:
+            raise LoginRequired
+        return templates.TemplateResponse(request, "enter.html", {"title": "Вход в админку"})
+
+    @app.post("/login/{token}")
     async def login(request: Request, token: str):
         who = store.consume_login(token)
         if not who or who[0] == OPS or not store.is_admin(*who):

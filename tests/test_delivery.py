@@ -93,7 +93,7 @@ async def test_pickup_ignores_the_pin(app, store, demo):
 
 async def test_the_owner_sets_the_point_and_zones(app, store, demo):
     client, _ = app
-    await client.get(f"/login/{store.create_login(demo.id, OWNER)}")
+    await client.post(f"/login/{store.create_login(demo.id, OWNER)}")
     page = (await client.get("/settings")).text
     assert 'id="cafe-map"' in page and 'value="3"' in page and 'value="10000"' in page
     form = {
