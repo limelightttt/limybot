@@ -218,7 +218,7 @@ async def test_owner_commands(env, store, demo):
     await place()
     assert "Заказ №1 · Новый" in session.texts(GROUP)[-1]  # orders now go to the staff group
     await feed(message(OWNER, "/stats"))
-    assert session.texts(OWNER)[-1] == "Сегодня: 1 заказов на 18 000 сум"
+    assert session.texts(OWNER)[-1] == "Сегодня: 1 заказ на 18 000 сум"
     await feed(message(CUSTOMER, "/privacy"))
     assert session.texts(CUSTOMER)[-1].startswith("Что мы храним")
 
@@ -378,3 +378,30 @@ async def test_groups_for_couriers_and_finance(env, store, demo):
     assert store.cafe(demo.id).courier_chat_id is None and "группы курьеров больше нет" in session.texts(OWNER)[-1]
     await feed(message(OWNER, "/finance"))  # in private: that group is switched off
     assert store.cafe(demo.id).finance_chat_id is None and "переводы подтверждают на кухне" in session.texts(OWNER)[-1]
+
+
+async def test_buttons_of_other_groups_are_answered_not_ignored(env, store, demo):
+    """A forged or misplaced staff button gets an answer (no endless spinner) and changes nothing."""
+    feed, place, session = env
+    o = await place()
+    await feed(tap(CUSTOMER, f"st:{o.id}:accepted", chat=Chat(id=-900, type="supergroup")))
+    await feed(tap(CUSTOMER, f"pay:{o.id}"))
+    assert alerts(session)[-2:] == ["Эта кнопка не для этого чата — её нажимает кухня, курьеры или финансы"] * 2
+    assert store.order(demo.id, o.id).status == "new"
+
+
+async def test_the_dress_rehearsal_runs():
+    """tests/rehearsal.py — a whole working day through the real code; it must keep working."""
+    from tests.rehearsal import rehearse
+
+    log = await rehearse()
+    steps = dict(log.steps)
+    assert len(log.steps) == 21
+    assert any(
+        "не для этого чата" in line
+        for line in steps["Курьер пытается нажать «Принять» за кухню (подделанная кнопка) — нельзя"]
+    )
+    assert any(
+        "никуда не ехать" in line
+        for line in steps["Кухня отменила (закончились продукты) — курьерам и гостю сообщение"]
+    )

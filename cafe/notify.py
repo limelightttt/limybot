@@ -23,7 +23,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from . import billing, reports
 from .billing import days, last_order_day
 from .config import Settings
-from .models import BOT_STATES, Cafe, money
+from .models import BOT_STATES, Cafe, money, orders_word
 from .store import OPERATOR, OPS, Store
 
 log = logging.getLogger(__name__)
@@ -115,7 +115,7 @@ def digest(store: Store, bot_state: Callable[[int], str], now: datetime) -> str:
     month = store.income(today.replace(day=1))
     lines = [
         f"limybot, {today:%d.%m}",
-        f"Вчера: {orders} заказов на {money(revenue)} во всех заведениях.",
+        f"Вчера: {orders_word(orders)} на {money(revenue)} во всех заведениях.",
         f"Оплат за этот месяц: {money(month)}.",
     ]
     for title, items in (

@@ -89,7 +89,7 @@ async def test_the_operator_gets_alerts_and_a_morning_digest(world, store, demo)
     await notifier.tick(tomorrow.astimezone(UTC))
     digests = [t for t in ops_session.texts(ME) if t.startswith("limybot,")]
     assert len(digests) == 1
-    assert "Вчера: 1 заказов" in digests[0] and "Отключены за неуплату" in digests[0] and "Demo Coffee" in digests[0]
+    assert "Вчера: 1 заказ" in digests[0] and "Отключены за неуплату" in digests[0] and "Demo Coffee" in digests[0]
     assert len(ops_session.texts(ME)) == 3  # the alerts were not repeated
 
 
