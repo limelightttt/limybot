@@ -11,7 +11,6 @@ from urllib.parse import urlencode
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import (
-    JOIN_TRANSITION,
     LEAVE_TRANSITION,
     ChatMemberUpdatedFilter,
     Command,
@@ -284,9 +283,11 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         if command.args and store.join(cafe.id, code, m.from_user.id, m.from_user.full_name):
             return await m.answer(
                 f"Готово, вы администратор «{cafe.name}».\n\n"
-                "Заказы будут приходить вам сюда. Чтобы они шли сотрудникам, добавьте меня в их группу в Telegram — "
-                "дальше я сам буду присылать заказы туда. Есть курьеры или бухгалтер — сделайте им отдельные группы "
-                "и тоже добавьте меня: спрошу, для чего группа.\n\n"
+                "Заказы будут приходить вам сюда. Чтобы они шли сотрудникам, добавьте меня в их группу в Telegram "
+                "и напишите там команду:\n"
+                "/staff — кухня: все заказы\n"
+                "/couriers — курьеры: доставки с адресом и точкой\n"
+                "/finance — финансы: переводы на карту и отмены\n\n"
                 "/admin — вход в админку: меню, цены, фото, заказы\n"
                 "/stats — заказы за сегодня"
             )
@@ -402,13 +403,10 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     }
     UNBOUND = {
         "staff": "Заказы снова приходят администраторам в личные сообщения.\n"
-        "Чтобы они шли сотрудникам, добавьте меня в их группу.",
+        "Чтобы они шли сотрудникам, добавьте меня в их группу и напишите там /staff.",
         "courier": "Группа курьеров отключена: заказы на доставку видны только на кухне.",
         "finance": "Группа финансов отключена: переводы подтверждают на кухне.",
     }
-
-    def role_buttons(current: str | None) -> InlineKeyboardMarkup | None:
-        return kb([[button(label, f"role:{role}")] for role, (_, label) in ROLES.items() if role != current])
 
     @r.message(Command(*GROUP_COMMANDS), is_admin)
     async def bind_group(m: Message, command: CommandObject, cafe: Cafe):
@@ -418,15 +416,6 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await m.answer(UNBOUND[role])
         store.set_staff_chat(cafe.id, m.chat.id, role)
         await m.answer(BOUND[role].format(name=cafe.name))
-
-    @r.callback_query(F.data.regexp(r"^role:(staff|courier|finance)$").as_("match"))
-    async def pick_role(q: CallbackQuery, match, cafe: Cafe):
-        if not store.is_admin(cafe.id, q.from_user.id):
-            return await q.answer("Выбрать может только администратор заведения", show_alert=True)
-        store.set_staff_chat(cafe.id, q.message.chat.id, match[1])
-        with suppress(TelegramBadRequest):
-            await q.message.edit_text(BOUND[match[1]].format(name=cafe.name), reply_markup=role_buttons(match[1]))
-        await q.answer("Сохранено")
 
     @r.message(Command("stats"), is_admin)
     async def stats(m: Message, cafe: Cafe):
@@ -446,28 +435,8 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             "которую вам прислали при подключении, — после этого я буду вас узнавать."
         )
 
-    # --- staff groups: adding the bot is all it takes ---
-    @r.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION), F.chat.type.in_({"group", "supergroup"}))
-    async def joined_group(event: ChatMemberUpdated, bot: Bot, cafe: Cafe):
-        markup = None
-        if not store.is_admin(cafe.id, event.from_user.id):
-            text = (
-                f"Здравствуйте! Я бот заказов «{cafe.name}». Чтобы заказы приходили в эту группу, администратор "
-                "заведения должен отправить здесь /staff (кухня), /couriers (курьеры) или /finance (финансы)."
-            )
-        elif not cafe.staff_chat_id:  # the first group is the kitchen: the common case needs no choice
-            store.set_staff_chat(cafe.id, event.chat.id)
-            text = (
-                BOUND["staff"].format(name=cafe.name) + "\n\nЕсли это группа курьеров или финансов — нажмите кнопку "
-                "ниже. Чтобы вернуть заказы в личные сообщения, удалите меня из группы."
-            )
-            markup = role_buttons("staff")
-        else:
-            text = f"Здравствуйте! Для чего эта группа «{cafe.name}»?"
-            markup = role_buttons(None)
-        with suppress(TelegramBadRequest, TelegramForbiddenError):  # a group where the bot may not write
-            await bot.send_message(event.chat.id, text, reply_markup=markup)
-
+    # --- staff groups: an admin binds a group by writing /staff, /couriers or /finance in it; adding the bot alone
+    # does nothing and says nothing (the owner decides what each group is for) ---
     @r.my_chat_member(ChatMemberUpdatedFilter(LEAVE_TRANSITION))
     async def left_group(event: ChatMemberUpdated, bot: Bot, cafe: Cafe):
         role = next((role for role, (column, _) in ROLES.items() if getattr(cafe, column) == event.chat.id), None)
@@ -482,7 +451,8 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         for uid, _ in store.admins(cafe.id):
             with suppress(TelegramBadRequest, TelegramForbiddenError):
                 await bot.send_message(
-                    uid, f"Меня убрали из группы «{event.chat.title}» — {what}. Вернуть — добавьте меня в группу снова."
+                    uid,
+                    f"Меня убрали из группы «{event.chat.title}» — {what}. Вернуть — добавьте меня в группу и напишите там команду снова.",
                 )
 
     @r.message(F.migrate_to_chat_id)

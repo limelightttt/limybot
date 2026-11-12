@@ -46,8 +46,8 @@
     <li>{% if cafe.courier_chat_id %}✅{% else %}▫️{% endif %} <b>Курьеры</b> — {% if cafe.courier_chat_id %}группа подключена{% else %}нет, доставку ведёт кухня{% endif %}</li>
     <li>{% if cafe.finance_chat_id %}✅{% else %}▫️{% endif %} <b>Финансы</b> — {% if cafe.finance_chat_id %}группа подключена{% else %}нет, переводы подтверждает кухня{% endif %}</li>
   </ul>
-  <p class="muted">Владелец добавляет бота в группу в Telegram: первая станет кухней, про следующие бот спросит, для чего они.
-    Или администратор пишет в группе <code>/staff</code>, <code>/couriers</code> или <code>/finance</code>.</p>
+  <p class="muted">Владелец добавляет бота в группу в Telegram и пишет там <code>/staff</code> (кухня), <code>/couriers</code>
+    (курьеры) или <code>/finance</code> (финансы).</p>
 </section>
 
 <section class="card" id="subscription">
