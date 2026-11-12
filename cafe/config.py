@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     web_port: int = 8000
     # how cafe owners reach you about the subscription, e.g. @limybot_support; shown in their admin
     support: str = ""
+    # set by compose.yaml: running on a server, not in a terminal window someone could close
+    server: bool = False
 
     @property
     def media_dir(self) -> Path:

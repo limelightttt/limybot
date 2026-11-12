@@ -47,6 +47,8 @@ clients/        стартовые шаблоны кафе (demo_coffee.json); c
 tests/          conftest.py (FakeSession, FakeBots, фикстуры, order(), init_data()), test_store, test_flow,
                 test_miniapp, test_web, test_ops, test_runner, schema_v0.sql (схема до миграций)
 Dockerfile, compose.yaml, Caddyfile — деплой: docker compose up -d, Caddy сам выпускает HTTPS для DOMAIN
+server.sh       установка/обновление на Ubuntu одной строкой (curl | sh): Docker, /opt/limybot, домен в .env,
+                проверка A-записи, compose up, ссылка в /ops
 ```
 
 ## Команды
