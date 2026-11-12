@@ -47,6 +47,9 @@ PAYMENT_METHODS = {"cash": "При получении", "transfer": "Перев�
 PAYMENT_STATUSES = {"pending": "Не оплачен", "claimed": "Клиент сообщил о переводе", "paid": "Оплачен"}
 
 
+MAX_MONEY = 100_000_000  # sum: the most any price, fee or payment may be — beyond is a typo (and SQLite's int64)
+
+
 def orders_word(n: int) -> str:
     """1 заказ, 2 заказа, 5 заказов."""
     word = (

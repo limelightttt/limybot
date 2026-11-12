@@ -5,7 +5,7 @@ and the pin is only for the courier."""
 
 from math import asin, cos, radians, sin, sqrt
 
-from .models import Cafe
+from .models import MAX_MONEY, Cafe
 
 EARTH_KM = 6371.0
 TASHKENT = (41.3111, 69.2797)  # where the map opens when nothing better is known
@@ -50,7 +50,7 @@ def parse_zones(rows: list[tuple[str, str]]) -> list[tuple[float, int]] | None:
             zone = (float(limit), int(price))
         except ValueError:
             return None
-        if zone[0] <= 0 or zone[1] < 0:
+        if not 0 < zone[0] <= 100 or not 0 <= zone[1] <= MAX_MONEY:
             return None
         zones.append(zone)
     return sorted(zones)

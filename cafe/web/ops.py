@@ -16,7 +16,7 @@ from .. import notify
 from ..billing import GRACE_DAYS, SUBSCRIPTION, TRIAL_DAYS, last_order_day
 from ..config import ROOT
 from ..media import drop_photo
-from ..models import BOT_STATES, Cafe
+from ..models import BOT_STATES, MAX_MONEY, Cafe
 from ..store import OPERATOR, OPS, SESSION_TTL
 from ..template import available_templates, connect_cafe, load_template, unpack_pack
 from ..tokens import TokenError
@@ -204,7 +204,7 @@ def router(web: Web) -> APIRouter:
     @r.post("/cafes/{cafe_id}/payment", dependencies=[Operator])
     async def payment(
         cafe_id: int,
-        amount: Annotated[int, Form(ge=0)],
+        amount: Annotated[int, Form(ge=0, le=MAX_MONEY)],
         months: Annotated[int, Form(ge=1, le=24)] = 1,
         note: Annotated[str, Form()] = "",
     ):
@@ -279,7 +279,7 @@ def router(web: Web) -> APIRouter:
         )
 
     @r.post("/settings", dependencies=[Operator])
-    async def save_settings(support: Annotated[str, Form()] = "", price: Annotated[int, Form(ge=0)] = 0):
+    async def save_settings(support: Annotated[str, Form()] = "", price: Annotated[int, Form(ge=0, le=MAX_MONEY)] = 0):
         store.set_meta("support", support.strip() or None)
         store.set_meta("price", str(price) if price else None)
         return back("/ops/settings", "Сохранено")
