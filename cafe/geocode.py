@@ -14,10 +14,12 @@ URL = "https://nominatim.openstreetmap.org/reverse"
 HEADERS = {"User-Agent": "limybot/1.0 (delivery address suggestions)"}
 SPACING = 1.1  # seconds between requests: Nominatim allows one a second
 CACHE_MAX = 5000
+MAX_WAITING = 5  # lookups queued at once; more get no suggestion (the guest types) rather than a long queue
 
 _cache: dict[tuple[float, float, str], str | None] = {}
 _lock = asyncio.Lock()
 _last = 0.0
+_waiting = 0
 
 
 async def fetch(lat: float, lon: float, lang: str) -> dict | None:
@@ -44,10 +46,21 @@ def line(data: dict) -> str | None:
 
 async def address(lat: float, lon: float, lang: str = "ru") -> str | None:
     """A suggestion for the address line, or None. ~10 m precision is plenty for a street and a house."""
-    global _last
+    global _waiting
     key = (round(lat, 4), round(lon, 4), lang)
     if key in _cache:
         return _cache[key]
+    if _waiting >= MAX_WAITING:  # someone floods it, or it is very busy: nobody should wait minutes
+        return None
+    _waiting += 1
+    try:
+        return await _lookup(key, lat, lon, lang)
+    finally:
+        _waiting -= 1
+
+
+async def _lookup(key: tuple, lat: float, lon: float, lang: str) -> str | None:
+    global _last
     async with _lock:  # one request at a time, spaced out
         if key in _cache:
             return _cache[key]

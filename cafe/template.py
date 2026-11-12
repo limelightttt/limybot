@@ -10,7 +10,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-from .media import save_photo
+from .media import BadImage, drop_photo, save_photo
 from .models import APP_THEMES
 from .store import Store
 
@@ -87,8 +87,20 @@ def import_cafe(store: Store, slug: str, bot_token: str, template: Template, med
     if t.pictures() and media_dir is None:
         raise ValueError("the template has pictures: pass media_dir")
 
+    # pictures first: a broken one stops the import before anything is in the database (no half-made cafe holding
+    # the bot token), and the ones already converted are removed
+    saved: dict[Path, str] = {}
+    try:
+        for path in t.pictures():
+            if path not in saved:
+                saved[path] = save_photo(path.read_bytes(), media_dir)
+    except BadImage as e:
+        for name in saved.values():
+            drop_photo(media_dir, name)
+        raise BadImage(f"{path.name}: {e}") from e
+
     def picture(path: Path) -> str:
-        return save_photo(path.read_bytes(), media_dir)
+        return saved[path]
 
     cafe_id = store.add_cafe(
         slug,

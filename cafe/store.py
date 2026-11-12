@@ -57,7 +57,8 @@ create table orders (
   comment text, lines text not null, subtotal integer not null, delivery_fee integer not null,
   total integer not null, status text not null default 'new',
   payment_method text not null default 'cash', payment_status text not null default 'pending',
-  created_at text not null, lat real, lon real, customer_message_id integer, unique (cafe_id, number)
+  created_at text not null, lat real, lon real, customer_message_id integer, rating integer,
+  unique (cafe_id, number)
 );
 create table staff_messages (
   order_id integer not null references orders on delete cascade, chat_id integer not null,
@@ -69,7 +70,13 @@ create table sessions (token text primary key, cafe_id integer not null,
   user_id integer not null, expires integer not null);
 create table customers (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null, phone text,
-  address text, lang text not null default 'ru', lat real, lon real, primary key (cafe_id, user_id)
+  address text, lang text not null default 'ru', lat real, lon real, muted integer not null default 0,
+  primary key (cafe_id, user_id)
+);
+create table broadcasts (
+  id integer primary key, cafe_id integer not null references cafes on delete cascade, text text not null,
+  audience integer not null, sent integer not null default 0, failed integer not null default 0,
+  status text not null default 'sending', created_at text not null
 );
 create table payments (
   id integer primary key, cafe_id integer not null references cafes on delete cascade, amount integer not null,
@@ -136,6 +143,16 @@ MIGRATIONS = [
     alter table cafes add column courier_chat_id integer;
     alter table cafes add column finance_chat_id integer;
     alter table orders add column customer_message_id integer;
+    """,
+    # 6: news to the cafe's guests (with opting out), a 1–5 rating of each order
+    """
+    alter table customers add column muted integer not null default 0;
+    alter table orders add column rating integer;
+    create table broadcasts (
+      id integer primary key, cafe_id integer not null references cafes on delete cascade, text text not null,
+      audience integer not null, sent integer not null default 0, failed integer not null default 0,
+      status text not null default 'sending', created_at text not null
+    );
     """,
 ]
 
@@ -564,7 +581,9 @@ class Store:
 
     def delete_category(self, cafe_id: int, category_id: int) -> bool:
         """Only empty categories can be deleted, so a misclick never wipes out items."""
-        if self.db.execute("select 1 from items where category_id = ?", (category_id,)).fetchone():
+        if self.db.execute(
+            "select 1 from items where category_id = ? and cafe_id = ?", (category_id, cafe_id)
+        ).fetchone():
             return False
         with self.db:
             self.db.execute("delete from categories where id = ? and cafe_id = ?", (category_id, cafe_id))
@@ -727,6 +746,50 @@ class Store:
                 (cafe_id, user_id, lang),
             )
 
+    def touch_customer(self, cafe_id: int, user_id: int, lang: str) -> None:
+        """A guest who opened the bot: known for news from now on, their saved language kept."""
+        with self.db:
+            self.db.execute(
+                "insert into customers (cafe_id, user_id, lang) values (?, ?, ?) on conflict (cafe_id, user_id) do nothing",
+                (cafe_id, user_id, lang),
+            )
+
+    def set_muted(self, cafe_id: int, user_id: int, muted: bool) -> None:
+        with self.db:
+            self.db.execute(
+                "insert into customers (cafe_id, user_id, muted) values (?, ?, ?)"
+                " on conflict (cafe_id, user_id) do update set muted = excluded.muted",
+                (cafe_id, user_id, int(muted)),
+            )
+
+    # --- news to guests ---
+    def audience(self, cafe_id: int) -> list[int]:
+        """Guests who opened this cafe's bot and did not opt out of news."""
+        rows = self.db.execute(
+            "select user_id from customers where cafe_id = ? and muted = 0 order by user_id", (cafe_id,)
+        )
+        return [r[0] for r in rows]
+
+    def add_broadcast(self, cafe_id: int, text: str, audience: int) -> int:
+        return self._insert(
+            "broadcasts", cafe_id=cafe_id, text=text, audience=audience, created_at=datetime.now(UTC).isoformat()
+        )
+
+    def broadcast_progress(self, cafe_id: int, broadcast_id: int, sent: int, failed: int, status: str) -> None:
+        with self.db:
+            self.db.execute(
+                "update broadcasts set sent = ?, failed = ?, status = ? where id = ? and cafe_id = ?",
+                (sent, failed, status, broadcast_id, cafe_id),
+            )
+
+    def broadcasts(self, cafe_id: int, limit: int = 20) -> list[dict]:
+        rows = self.db.execute("select * from broadcasts where cafe_id = ? order by id desc limit ?", (cafe_id, limit))
+        return [dict(r) | {"created_at": datetime.fromisoformat(r["created_at"])} for r in rows]
+
+    def broadcasts_since(self, cafe_id: int, since: datetime) -> int:
+        q = "select count(*) from broadcasts where cafe_id = ? and created_at >= ?"
+        return self.db.execute(q, (cafe_id, since.astimezone(UTC).isoformat())).fetchone()[0]
+
     # --- orders ---
     def place(
         self,
@@ -842,21 +905,29 @@ class Store:
         missing += [ln["name"] for ln, line in zip(wanted, found) if line is None]
         return [line for line in found if line], missing
 
-    def set_status(self, cafe_id: int, order_id: int, status: str) -> None:
+    def set_status(self, cafe_id: int, order_id: int, status: str, was: str | None = None) -> bool:
+        """With `was`: only if the order is still in that status (one UPDATE — a guest's cancel or another cook's tap
+        a moment earlier wins, nothing is overwritten). False if nothing changed."""
         with self.db:
-            self.db.execute("update orders set status = ? where id = ? and cafe_id = ?", (status, order_id, cafe_id))
+            cur = self.db.execute(
+                "update orders set status = ? where id = ? and cafe_id = ? and (? is null or status = ?)",
+                (status, order_id, cafe_id, was, was),
+            )
+            if cur.rowcount != 1:
+                return False
             if status in HANDED_OVER:  # cash is collected when the order is handed over
                 self.db.execute(
                     "update orders set payment_status = 'paid' where id = ? and payment_method = 'cash'",
                     (order_id,),
                 )
+        return True
 
     def cancel_by_customer(self, cafe_id: int, user_id: int, order_id: int) -> bool:
         """Only until cooking starts (models.CUSTOMER_CANCELLABLE); one statement, so it cannot race the staff's button."""
         with self.db:
             cur = self.db.execute(
                 "update orders set status = 'cancelled'"
-                " where id = ? and cafe_id = ? and user_id = ? and status in ('new', 'accepted')",
+                " where id = ? and cafe_id = ? and user_id = ? and status in ('new', 'accepted') and payment_status = 'pending'",
                 (order_id, cafe_id, user_id),
             )
         return cur.rowcount == 1
@@ -894,6 +965,27 @@ class Store:
     def staff_messages(self, order_id: int) -> list[tuple[int, int]]:
         rows = self.db.execute("select chat_id, message_id from staff_messages where order_id = ?", (order_id,))
         return [(r[0], r[1]) for r in rows]
+
+    def open_orders(self, cafe_id: int, user_id: int, since: datetime) -> tuple[int, int]:
+        """(the guest's orders still waiting for the kitchen, all their orders since then): against order spam."""
+        waiting = self.db.execute(
+            "select count(*) from orders where cafe_id = ? and user_id = ? and status = 'new'", (cafe_id, user_id)
+        ).fetchone()[0]
+        recent = self.db.execute(
+            "select count(*) from orders where cafe_id = ? and user_id = ? and created_at >= ?",
+            (cafe_id, user_id, since.astimezone(UTC).isoformat()),
+        ).fetchone()[0]
+        return waiting, recent
+
+    def rate(self, cafe_id: int, user_id: int, order_id: int, stars: int) -> bool:
+        """The guest's own order, once it is in their hands, rated once."""
+        with self.db:
+            cur = self.db.execute(
+                "update orders set rating = ? where id = ? and cafe_id = ? and user_id = ? and rating is null"
+                " and status in ('done', 'delivered')",
+                (stars, order_id, cafe_id, user_id),
+            )
+        return cur.rowcount == 1
 
     def stats(self, cafe_id: int, since: datetime, until: datetime | None = None) -> tuple[int, int]:
         """(orders, their total) placed since then (and before `until`), cancelled ones not counted."""

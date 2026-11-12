@@ -28,6 +28,11 @@ def world(store, demo, settings, fake):
     return notifier, session, ops_session, state
 
 
+def noon() -> datetime:
+    """Reminders reach owners in the daytime: tests tick at noon, Tashkent time, today."""
+    return datetime.now(TZ).replace(hour=12, minute=0).astimezone(UTC)
+
+
 def days_from_today(store, cafe_id: int, n: int) -> None:
     store.set_paid_until(cafe_id, store.cafe(cafe_id).now().date() + timedelta(days=n))
 
@@ -35,12 +40,12 @@ def days_from_today(store, cafe_id: int, n: int) -> None:
 async def test_owner_reminders_go_out_once_each(world, store, demo):
     notifier, session, _, _ = world
     days_from_today(store, demo.id, 10)
-    await notifier.tick()
+    await notifier.tick(noon())
     assert session.texts(OWNER) == []  # nothing to say yet
 
     days_from_today(store, demo.id, 3)
-    await notifier.tick()
-    await notifier.tick()  # every 15 seconds — but once
+    await notifier.tick(noon())
+    await notifier.tick(noon())  # every 15 seconds — but once
     texts = session.texts(OWNER)
     assert (
         len(texts) == 1 and "Пробный период бота «Demo Coffee» заканчивается" in texts[0] and "через 3 дня" in texts[0]
@@ -48,13 +53,13 @@ async def test_owner_reminders_go_out_once_each(world, store, demo):
     assert "299 000 сум в месяц" in texts[0]
 
     days_from_today(store, demo.id, 0)
-    await notifier.tick()
+    await notifier.tick(noon())
     assert "заканчивается сегодня" in session.texts(OWNER)[-1]
     days_from_today(store, demo.id, -1)
-    await notifier.tick()
+    await notifier.tick(noon())
     assert "Бот ещё принимает заказы до" in session.texts(OWNER)[-1] and store.cafe(demo.id).active()
     days_from_today(store, demo.id, -3)
-    await notifier.tick()
+    await notifier.tick(noon())
     assert "перестал принимать заказы" in session.texts(OWNER)[-1] and not store.cafe(demo.id).active()
     assert len(session.texts(OWNER)) == 4
 
@@ -65,9 +70,9 @@ async def test_reminders_wait_for_a_stopped_bot(store, demo, settings, fake):
     running = {}
     notifier = Notifier(store, settings, running.get, lambda _: "offline")
     days_from_today(store, demo.id, 2)
-    await notifier.tick()
+    await notifier.tick(noon())
     running[demo.id] = bot  # back online: the reminder is still due
-    await notifier.tick()
+    await notifier.tick(noon())
     assert len(session.texts(OWNER)) == 1
 
 
@@ -202,3 +207,12 @@ async def test_the_service_bot_cannot_be_a_cafe_bot(panel, store, demo):
     assert "Это ваш служебный бот" in r.text and not store.cafe_by_token("9:ops")
     await client.post(f"/ops/cafes/{demo.id}/token", data={"token": "9:ops"})
     assert store.cafe(demo.id).bot_token == "1:demo"
+
+
+async def test_no_reminders_at_night(world, store, demo):
+    notifier, session, _, _ = world
+    days_from_today(store, demo.id, 3)
+    await notifier.tick(datetime.now(TZ).replace(hour=0, minute=1).astimezone(UTC))
+    assert session.texts(OWNER) == []  # the date flipped at midnight; the owner hears about it at 10
+    await notifier.tick(noon())
+    assert len(session.texts(OWNER)) == 1

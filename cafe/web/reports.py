@@ -1,6 +1,6 @@
 """Admin: reports — money and orders over a period, best sellers, days, and the orders as a CSV for Excel."""
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request
@@ -9,6 +9,8 @@ from fastapi.responses import Response
 from .. import reports
 from ..models import PAYMENT_METHODS, Cafe
 from .common import Web
+
+EARLIEST, LATEST = date(2020, 1, 1), date(2100, 12, 31)
 
 
 def router(web: Web) -> APIRouter:
@@ -23,8 +25,9 @@ def router(web: Web) -> APIRouter:
         except ValueError:
             a, b = reports.period(cafe, p)
             return a, b, p if p in reports.PERIODS else "today"
+        a, b = (min(max(d, EARLIEST), LATEST) for d in (a, b))  # 0001-01-01 or 9999-12-31 break date maths
         a, b = min(a, b), max(a, b)
-        return max(a, b.replace(year=b.year - 1)) if (b - a).days > 366 else a, b, ""
+        return max(a, b - timedelta(days=366)), b, ""  # at most a year: a report, not a dump
 
     @r.get("/reports")
     async def page(request: Request, admin: Admin, p: str = "today", since: str = "", until: str = ""):

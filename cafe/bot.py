@@ -9,7 +9,7 @@ from html import escape
 from urllib.parse import urlencode
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import (
     LEAVE_TRANSITION,
     ChatMemberUpdatedFilter,
@@ -34,7 +34,7 @@ from aiogram.types import (
 from . import delivery, i18n
 from .config import Settings
 from .i18n import t
-from .models import PAYMENT_METHODS, PAYMENT_STATUSES, ROLES, STATUSES, Cafe, Order, orders_word, title
+from .models import HANDED_OVER, PAYMENT_METHODS, PAYMENT_STATUSES, ROLES, STATUSES, Cafe, Order, orders_word, title
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -130,12 +130,12 @@ async def _post(bot: Bot, store: Store, cafe: Cafe, o: Order, chat: int, role: s
     text, markup = staff_card(cafe, o, role)
     try:
         msg = await bot.send_message(chat, text, reply_markup=markup)
-    except (TelegramBadRequest, TelegramForbiddenError) as e:
+    except TelegramAPIError as e:
         log.warning("%s: cannot deliver order %s to chat %s: %s", cafe.slug, o.number, chat, e)
         return
     store.add_staff_message(o.id, chat, msg.message_id)
     if o.point and role != "finance":  # a real pin under the card: a tap opens it in any map app on the phone
-        with suppress(TelegramBadRequest, TelegramForbiddenError):
+        with suppress(TelegramAPIError):
             reply = ReplyParameters(message_id=msg.message_id, allow_sending_without_reply=True)
             await bot.send_location(chat, *o.point, reply_parameters=reply)
 
@@ -161,7 +161,7 @@ async def refresh_staff(
         with suppress(TelegramBadRequest):  # card deleted in the chat
             await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
         if note and (note_roles is None or role in note_roles):
-            with suppress(TelegramBadRequest, TelegramForbiddenError):
+            with suppress(TelegramAPIError):
                 reply = ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
                 await bot.send_message(chat_id, note, reply_parameters=reply)
 
@@ -189,7 +189,7 @@ def customer_view(cafe: Cafe, o: Order, lang: str) -> tuple[str, InlineKeyboardM
 
 async def send_to_customer(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
     text, markup = customer_view(cafe, o, customer_lang(store, cafe.id, o.user_id))
-    with suppress(TelegramForbiddenError, TelegramBadRequest):  # never started the bot, or blocked it
+    with suppress(TelegramAPIError):  # never started the bot, or blocked it
         msg = await bot.send_message(o.user_id, text, parse_mode="HTML", reply_markup=markup)
         store.set_customer_message(cafe.id, o.id, msg.message_id)
 
@@ -200,7 +200,7 @@ async def refresh_customer(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None
     if not o.customer_message_id:
         return
     text, markup = customer_view(cafe, o, customer_lang(store, cafe.id, o.user_id))
-    with suppress(TelegramForbiddenError, TelegramBadRequest):  # deleted by the guest, or "not modified"
+    with suppress(TelegramAPIError):  # deleted by the guest, or "not modified"
         await bot.edit_message_text(
             text, chat_id=o.user_id, message_id=o.customer_message_id, parse_mode="HTML", reply_markup=markup
         )
@@ -208,19 +208,34 @@ async def refresh_customer(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None
 
 async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) -> bool:
     """Move an order forward, refresh its staff cards and tell the customer. False for stale requests."""
-    if new not in o.next_statuses:
-        return False
-    store.set_status(cafe.id, o.id, new)
+    if new not in o.next_statuses or not store.set_status(cafe.id, o.id, new, was=o.status):
+        return False  # stale: someone (the guest cancelling, another cook) changed it a moment ago
     o = store.order(cafe.id, o.id)
     note = f"✖️ Заказ №{o.number} отменён" if new == "cancelled" else None
     await refresh_staff(bot, store, cafe, o, note=note, note_roles={"courier", "finance"})
+    if new == "cancelled" and o.payment_status in ("paid", "claimed"):  # money came (or may have): give it back
+        await refresh_staff(
+            bot,
+            store,
+            cafe,
+            o,
+            note=f"💸 Заказ №{o.number} отменён, а гость уже перевёл {cafe.money(o.total)} — верните деньги",
+            note_roles={"finance"} if cafe.finance_chat_id else {"staff"},
+        )
     await refresh_customer(bot, store, cafe, o)
     if new == "accepted" and o.method == "delivery" and cafe.courier_chat_id:
         await _post(bot, store, cafe, o, cafe.courier_chat_id, "courier")
+    if new in HANDED_OVER:  # in the guest's hands: how was it?
+        lang = customer_lang(store, cafe.id, o.user_id)
+        stars = [button(f"{n}⭐", f"rate:{o.id}:{n}") for n in range(1, 6)]
+        with suppress(TelegramAPIError):
+            await bot.send_message(
+                o.user_id, t(lang, "rate_ask", number=o.number, name=cafe.name), reply_markup=kb([stars])
+            )
     key = f"status_{new}"  # nothing is sent when the order is handed over: the customer already has it
     if key in i18n.BOT_TEXTS["ru"]:
         lang = customer_lang(store, cafe.id, o.user_id)
-        with suppress(TelegramForbiddenError, TelegramBadRequest):
+        with suppress(TelegramAPIError):
             await bot.send_message(o.user_id, t(lang, key, number=o.number, address=cafe.pickup_address))
     return True
 
@@ -233,7 +248,7 @@ async def mark_paid(bot: Bot, store: Store, cafe: Cafe, order_id: int) -> bool:
     await refresh_staff(bot, store, cafe, o)
     await refresh_customer(bot, store, cafe, o)
     lang = customer_lang(store, cafe.id, o.user_id)
-    with suppress(TelegramForbiddenError, TelegramBadRequest):
+    with suppress(TelegramAPIError):
         await bot.send_message(o.user_id, t(lang, "payment_received", number=o.number))
     return True
 
@@ -262,6 +277,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         for o in orders:
             when = o.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m %H:%M")
             what = ", ".join(f"{title(ln['name'], ln['options'])} × {ln['qty']}" for ln in o.lines)
+            what = what if len(what) <= 300 else what[:299] + "…"  # five orders must fit one message
             blocks.append(
                 f"<b>№{o.number}</b> · {when} · {i18n.STATUS[lang][o.status]}\n"
                 f"{escape(what)} — {i18n.money(cafe, o.total, lang)}"
@@ -293,8 +309,45 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
                 "/admin — вход в админку: меню, цены, фото, заказы\n"
                 "/stats — заказы за сегодня"
             )
-        text, markup = start_view(cafe, customer_lang(store, cafe.id, m.from_user))
+        lang = customer_lang(store, cafe.id, m.from_user)
+        store.touch_customer(cafe.id, m.from_user.id, lang)  # known for news from now on
+        text, markup = start_view(cafe, lang)
         await m.answer(text, reply_markup=markup)
+
+    @r.callback_query(F.data.in_({"news:off", "news:on"}))
+    async def news_switch(q: CallbackQuery, cafe: Cafe):
+        off = q.data == "news:off"
+        store.set_muted(cafe.id, q.from_user.id, off)
+        lang = customer_lang(store, cafe.id, q.from_user)
+        with suppress(TelegramBadRequest):
+            await q.message.edit_reply_markup(reply_markup=None)
+        await q.message.answer(t(lang, "news_muted") if off else t(lang, "news_on", name=cafe.name))
+        await q.answer()
+
+    @r.message(Command("news"), F.chat.type == "private")
+    async def news_on(m: Message, cafe: Cafe):
+        store.set_muted(cafe.id, m.from_user.id, False)
+        await m.answer(t(customer_lang(store, cafe.id, m.from_user), "news_on", name=cafe.name))
+
+    @r.callback_query(F.data.regexp(r"^rate:(\d+):([1-5])$").as_("match"))
+    async def rate(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
+        lang = customer_lang(store, cafe.id, q.from_user)
+        stars = int(match[2])
+        if not store.rate(cafe.id, q.from_user.id, int(match[1]), stars):
+            return await q.answer(t(lang, "rate_no"))
+        o = store.order(cafe.id, int(match[1]))
+        shown = "⭐" * stars
+        with suppress(TelegramBadRequest):
+            await q.message.edit_text(t(lang, "rate_thanks" if stars >= 4 else "rate_sorry", stars=shown))
+        await q.answer()
+        if stars <= 3:  # the owner should hear about it today, not in the monthly report
+            for uid, _ in store.admins(cafe.id):
+                with suppress(TelegramAPIError):
+                    await bot.send_message(
+                        uid,
+                        f"{shown} — оценка заказа №{o.number} от {o.customer}, {o.phone}.\n"
+                        "Стоит позвонить и узнать, что пошло не так.",
+                    )
 
     @r.callback_query(F.data.regexp(r"^lang:(ru|uz)$").as_("match"))
     async def switch_lang(q: CallbackQuery, match, cafe: Cafe):
@@ -457,7 +510,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             "finance": "группы финансов больше нет — переводы подтверждают на кухне",
         }[role]
         for uid, _ in store.admins(cafe.id):
-            with suppress(TelegramBadRequest, TelegramForbiddenError):
+            with suppress(TelegramAPIError):
                 await bot.send_message(
                     uid,
                     f"Меня убрали из группы «{event.chat.title}» — {what}. Вернуть — добавьте меня в группу и напишите там команду снова.",

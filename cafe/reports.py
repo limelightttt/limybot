@@ -38,6 +38,11 @@ class Report:
     cancelled_sum: int = 0
     top: list[tuple[str, int, int]] = field(default_factory=list)  # (name with options, qty, sum)
     days: list[tuple[date, int, int]] = field(default_factory=list)  # (day, orders, revenue)
+    ratings: list[int] = field(default_factory=list)  # the guests' 1–5 for the period's orders
+
+    @property
+    def rating(self) -> float | None:
+        return round(sum(self.ratings) / len(self.ratings), 1) if self.ratings else None
 
     @property
     def average(self) -> int:
@@ -77,6 +82,8 @@ def build(store: Store, cafe: Cafe, since: date, until: date) -> Report:
             continue
         r.orders += 1
         r.revenue += o.total
+        if o.rating:
+            r.ratings.append(o.rating)
         r.goods += o.subtotal
         r.delivery += o.delivery_fee
         if o.method == "delivery":
@@ -165,6 +172,8 @@ def daily_summary(store: Store, cafe: Cafe, day: date) -> str | None:
         lines.append(f"⚠️ Переводы без подтверждения: {cafe.money(r.unpaid_transfers)}")
     if r.cancelled:
         lines.append(f"Отменено: {r.cancelled}")
+    if r.rating:
+        lines.append(f"Оценка гостей: {r.rating} ⭐ ({len(r.ratings)})")
     if r.top:
         lines.append("Чаще всего: " + ", ".join(f"{name} × {q}" for name, q, _ in r.top[:3]))
     lines.append("\nПодробно — /admin → Отчёты")

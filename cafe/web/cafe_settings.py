@@ -5,11 +5,10 @@ from datetime import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from PIL import Image, UnidentifiedImageError
 
 from ..delivery import parse_zones
-from ..media import drop_photo, save_photo
-from ..models import APP_THEMES, Cafe
+from ..media import BadImage, drop_photo, save_photo
+from ..models import APP_THEMES, MAX_MONEY, Cafe
 from .common import Web, back
 
 
@@ -36,16 +35,16 @@ def router(web: Web) -> APIRouter:
     @r.post("/settings")
     async def save_settings(
         admin: Admin,
-        name: Annotated[str, Form()],
-        greeting: Annotated[str, Form()],
+        name: Annotated[str, Form(min_length=1, max_length=120)],
+        greeting: Annotated[str, Form(min_length=1, max_length=2000)],
         pickup_address: Annotated[str, Form()] = "",
         payment_note: Annotated[str, Form()] = "",
         always_open: Annotated[bool, Form()] = False,
         open_time: Annotated[str, Form()] = "",
         close_time: Annotated[str, Form()] = "",
         delivery_enabled: Annotated[bool, Form()] = False,
-        delivery_min: Annotated[int, Form(ge=0)] = 0,
-        delivery_fee: Annotated[int, Form(ge=0)] = 0,
+        delivery_min: Annotated[int, Form(ge=0, le=MAX_MONEY)] = 0,
+        delivery_fee: Annotated[int, Form(ge=0, le=MAX_MONEY)] = 0,
         card_number: Annotated[str, Form()] = "",
         card_holder: Annotated[str, Form()] = "",
         lat: Annotated[str, Form()] = "",
@@ -54,6 +53,8 @@ def router(web: Web) -> APIRouter:
         zone_fee: Annotated[list[str] | None, Form()] = None,
     ):
         cafe, _ = admin
+        if not name.strip() or not greeting.strip():  # spaces only: the bot would greet with an empty message
+            return back("/settings", "Название и приветствие не могут быть пустыми")
         try:
             hours = (None, None) if always_open else (time.fromisoformat(open_time), time.fromisoformat(close_time))
         except ValueError:
@@ -68,7 +69,7 @@ def router(web: Web) -> APIRouter:
             point = (float(lat), float(lon)) if lat and lon else (None, None)
         except ValueError:
             point = (None, None)
-        if not (point[0] is None or (-90 <= point[0] <= 90 and -180 <= point[1] <= 180)):
+        if not (point[0] is None or (-90 <= point[0] <= 90 and -180 <= point[1] <= 180)):  # also nan, inf
             point = (None, None)
         store.update_cafe(
             cafe.id,
@@ -108,8 +109,8 @@ def router(web: Web) -> APIRouter:
             if data:
                 try:
                     name = save_photo(data, media)
-                except (UnidentifiedImageError, Image.DecompressionBombError):
-                    return back("/settings#brand", "Не получилось прочитать картинку — загрузите JPG или PNG")
+                except BadImage as e:
+                    return back("/settings#brand", f"Не сохранено: {e}")
                 drop_photo(media, store.set_cafe_image(cafe.id, kind, name))
             elif remove:
                 drop_photo(media, store.set_cafe_image(cafe.id, kind, None))

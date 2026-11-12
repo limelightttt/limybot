@@ -3,7 +3,9 @@ The page and the menu are public. Everything about a customer is signed by Teleg
 X-Telegram-Init-Data header) and checked with the cafe's bot token. The cart lives on the phone, so every order
 is re-checked against the current menu here."""
 
+import logging
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
 from aiogram.utils.web_app import WebAppUser, safe_parse_webapp_init_data
@@ -19,7 +21,10 @@ from ..models import Cafe
 from ..store import MAX_QTY
 from .common import Web
 
+log = logging.getLogger(__name__)
 INIT_DATA_TTL = 24 * 3600  # Telegram re-signs it every time the Mini App is opened
+MAX_WAITING = 3  # a guest's orders the kitchen has not accepted yet
+MAX_PER_HOUR = 10  # a guest's orders in the last hour
 
 
 class LineIn(BaseModel):
@@ -32,7 +37,7 @@ class OrderIn(BaseModel):
     lines: list[LineIn] = Field(min_length=1, max_length=50)
     method: Literal["pickup", "delivery"]
     phone: str = Field(max_length=30)
-    address: str = Field("", max_length=200)
+    address: str = Field("", max_length=300)
     comment: str = Field("", max_length=300)
     payment: Literal["cash", "transfer"]
     lang: Literal["ru", "uz"]
@@ -167,6 +172,9 @@ def router(web: Web) -> APIRouter:
             return JSONResponse({"error": code}, status_code=409)
 
         bot = web.bots.bot(cafe.id)
+        waiting, last_hour = store.open_orders(cafe.id, user.id, datetime.now(UTC) - timedelta(hours=1))
+        if waiting >= MAX_WAITING or last_hour >= MAX_PER_HOUR:  # a stuck button, a prank or a bot
+            return refuse("too_many")
         if not cafe.active():
             return refuse("inactive")
         if not cafe.is_open():
@@ -205,8 +213,11 @@ def router(web: Web) -> APIRouter:
             lang=body.lang,
             point=point,
         )
-        await send_to_staff(bot, store, cafe, o)
-        await send_to_customer(bot, store, cafe, o)
+        try:  # the order is saved: a Telegram hiccup now must not look like a failure (the guest would order twice)
+            await send_to_staff(bot, store, cafe, o)
+            await send_to_customer(bot, store, cafe, o)
+        except Exception:
+            log.exception("%s: order %s saved, but Telegram did not take the messages", cafe.slug, o.number)
         result = {"number": o.number, "total": o.total}
         if o.payment_method == "transfer":  # the card is shown only to someone who has to pay to it
             result["card"] = {"number": cafe.card_number, "holder": cafe.card_holder}

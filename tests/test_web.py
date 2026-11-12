@@ -216,7 +216,7 @@ async def test_brand_and_promo_poster(web, store, demo, settings):
     await client.post("/settings/brand", data={"brand_color": "#0a7d55", "app_theme": "dark"})
     assert store.cafe(demo.id).app_theme == "dark"
     r = await client.post("/settings/brand", data={"brand_color": "#0a7d55", "app_theme": "neon"})
-    assert r.status_code == 422 and store.cafe(demo.id).app_theme == "dark"
+    assert r.status_code == 303 and "msg=" in r.headers["location"] and store.cafe(demo.id).app_theme == "dark"
 
     store.set_bot_username(demo.id, "demo_coffee_bot")
     poster = (await client.get("/promo")).text
@@ -270,3 +270,14 @@ async def test_a_link_preview_does_not_use_up_the_login_link(web, store, demo):
     r = await client.post(f"/login/{token}")  # the person: the page sends itself
     assert r.status_code == 303 and r.headers["location"] == "/orders"
     assert (await client.get(f"/login/{token}")).status_code == 401  # and then it is used up
+
+
+async def test_typos_in_forms_come_back_with_a_message(web, store, demo):
+    """Letters in a price, an empty name, a number bigger than any price: the page again, a message, nothing saved."""
+    client, _ = web
+    await login(client, store, demo.id)
+    form = {"name": "Demo Coffee", "greeting": "Привет", "always_open": "1"}
+    for bad in ({"delivery_fee": "99999999999999999999999"}, {"delivery_fee": "сто"}, {"name": ""}):
+        r = await client.post("/settings", data=form | bad, headers={"referer": "https://admin.example.uz/settings"})
+        assert r.status_code == 303 and r.headers["location"].startswith("/settings?msg=")
+    assert store.cafe(demo.id).delivery_fee == 15000 and store.cafe(demo.id).name == "Demo Coffee"

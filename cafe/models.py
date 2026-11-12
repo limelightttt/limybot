@@ -23,6 +23,7 @@ FLOW = {
 }
 STAFF_CANCELLABLE = {"new", "accepted", "cooking"}  # nothing is cancelled once it is ready or on the way
 CUSTOMER_CANCELLABLE = {"new", "accepted"}
+SHOWN_LINES = 20  # order lines in a Telegram message; the rest is in the admin (a message holds 4096 characters)
 # staff groups by role: (cafes column, what the group is for). A group added by an admin becomes the kitchen if there
 # is none yet; otherwise the bot asks which one it is.
 ROLES = {
@@ -45,6 +46,9 @@ BOT_STATES = {
 APP_THEMES = {"auto": "Как в Telegram у гостя", "dark": "Тёмная", "light": "Светлая"}
 PAYMENT_METHODS = {"cash": "При получении", "transfer": "Перевод на карту"}
 PAYMENT_STATUSES = {"pending": "Не оплачен", "claimed": "Клиент сообщил о переводе", "paid": "Оплачен"}
+
+
+MAX_MONEY = 100_000_000  # sum: the most any price, fee or payment may be — beyond is a typo (and SQLite's int64)
 
 
 def orders_word(n: int) -> str:
@@ -151,6 +155,7 @@ class Customer:
     lang: str
     lat: float | None = None  # the last delivery pin
     lon: float | None = None
+    muted: bool = False  # opted out of the cafe's news
 
 
 @dataclass
@@ -240,6 +245,7 @@ class Order:
     lat: float | None = None  # the delivery pin from the Mini App
     lon: float | None = None
     customer_message_id: int | None = None  # the order message in the guest's chat, redrawn on every change
+    rating: int | None = None  # 1–5 from the guest once the order is in their hands
 
     @property
     def point(self) -> tuple[float, float] | None:
@@ -247,7 +253,8 @@ class Order:
 
     @property
     def customer_can_cancel(self) -> bool:
-        return self.status in CUSTOMER_CANCELLABLE
+        """Until cooking starts — and not once a transfer is (said to be) made: money back needs the cafe."""
+        return self.status in CUSTOMER_CANCELLABLE and self.payment_status == "pending"
 
     @property
     def next_statuses(self) -> list[str]:
@@ -263,7 +270,10 @@ class Order:
         return self.payment_method == "transfer" and self.payment_status != "paid" and self.status != "cancelled"
 
     def lines_text(self, cafe: Cafe) -> str:
-        return "\n".join(
+        shown = [
             f"{title(ln['name'], ln['options'])} × {ln['qty']} — {cafe.money(ln['unit'] * ln['qty'])}"
-            for ln in self.lines
-        )
+            for ln in self.lines[:SHOWN_LINES]
+        ]
+        if len(self.lines) > SHOWN_LINES:  # a Telegram message holds 4096 characters
+            shown.append(f"… и ещё {len(self.lines) - SHOWN_LINES} поз. — весь заказ в админке")
+        return "\n".join(shown)

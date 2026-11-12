@@ -18,6 +18,7 @@
     <div><small class="muted">Выручка</small><br><strong>{{ m(r.revenue) }}</strong></div>
     <div><small class="muted">Заказов</small><br><strong>{{ r.orders }}</strong></div>
     <div><small class="muted">Средний чек</small><br><strong>{{ m(r.average) }}</strong></div>
+    {% if r.rating %}<div><small class="muted">Оценка гостей</small><br><strong>{{ r.rating }} ⭐</strong> <small class="muted">({{ r.ratings|length }})</small></div>{% endif %}
   </div>
   <table class="report">
     <tr><td>Товары</td><td>{{ m(r.goods) }}</td></tr>

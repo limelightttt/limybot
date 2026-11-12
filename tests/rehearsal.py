@@ -159,7 +159,9 @@ async def rehearse() -> Log:
     log.step("Азиз всё-таки жмёт «Отменить» со старого экрана — нельзя")
     await feed(tap(COURIER, f"st:{o1}:courier", chat=group(COURIERS)))
     await feed(tap(COURIER, f"st:{o1}:delivered", chat=group(COURIERS)))
-    log.step("Курьер: «Передан курьеру», потом «Доставлен»")
+    log.step("Курьер: «Передан курьеру», потом «Доставлен» — гостю вопрос про оценку")
+    await feed(tap(AZIZ, f"rate:{o1}:2"))
+    log.step("Азиз поставил 2⭐ — владельцу сразу сообщение, позвонить гостю")
 
     # --- 2: pickup, cash, the guest changes their mind after it was accepted ---
     o2 = await order(MALIKA, lines=espresso, method="pickup", payment="cash")
@@ -197,6 +199,32 @@ async def rehearse() -> Log:
     )
     await feed(tap(COOK, f"st:{o4}:accepted", chat=group(KITCHEN)))
     log.step("Новая доставка без группы курьеров — её ведёт кухня")
+
+    # --- spam and news ---
+    for _ in range(3):
+        r = await web.post(
+            "/app/demo/orders",
+            json={"lines": espresso, "method": "pickup", "payment": "cash", "phone": "+998 90 000 00 00", "lang": "ru"},
+            headers={"X-Telegram-Init-Data": init_data("1:demo", STRANGER)},
+        )
+    log.step(f"Посторонний шлёт заказы подряд — третий принят, дальше: {r.json().get('error', 'принят')}")
+    r = await web.post(
+        "/app/demo/orders",
+        json={"lines": espresso, "method": "pickup", "payment": "cash", "phone": "+998 90 000 00 00", "lang": "ru"},
+        headers={"X-Telegram-Init-Data": init_data("1:demo", STRANGER)},
+    )
+    log.step(f"Четвёртый заказ подряд, пока кухня не приняла прошлые — отказ: {r.json().get('error')}")
+    for uid in (AZIZ, MALIKA, TIMUR):
+        await feed(message(uid, "/start"))
+    await feed(tap(MALIKA, "news:off"))
+    log.step("Гости открыли бота, Малика отписалась от новостей")
+    from cafe import news
+
+    news.PACE = 0
+    await web.post(f"/login/{store.create_login(cafe_id, OWNER)}")
+    await web.post("/promo/news", data={"text": "Новинка: чизкейк с фисташкой −20% до воскресенья 🍰"})
+    await asyncio.gather(*news.running)
+    log.step("Владелец отправил рассылку из админки — Малике не пришло")
     return log
 
 

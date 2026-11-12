@@ -4,6 +4,8 @@
 import pathlib
 
 from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,7 +17,7 @@ from ..media import ensure_thumbs, thumb
 from ..models import APP_THEMES, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe
 from ..store import OPS, SESSION_TTL, Store
 from . import cafe_settings, menu, miniapp, ops, orders, promo, reports
-from .common import COOKIE, Bots, LoginRequired, OpsLoginRequired, Web, secure_cookie
+from .common import COOKIE, Bots, LoginRequired, OpsLoginRequired, Web, back, secure_cookie
 
 HERE = pathlib.Path(__file__).parent
 
@@ -50,6 +52,20 @@ def create_app(store: Store, settings: Settings, bots: Bots) -> FastAPI:
     )
     templates.env.filters["thumb"] = thumb
     web = Web(store, settings, bots, templates)
+
+    @app.exception_handler(RequestValidationError)
+    async def bad_form(request: Request, exc: RequestValidationError):
+        """A form with a typo (letters in a price, an empty name, a number too big) goes back to its page with a
+        message, not to a page of JSON. The Mini App's API keeps the JSON answer: app.js reads it."""
+        if request.url.path.startswith("/app/"):
+            return await request_validation_exception_handler(request, exc)
+        back_to = request.headers.get("referer", "")
+        here = str(request.base_url)
+        url = "/" + back_to[len(here) :] if back_to.startswith(here) else "/"
+        return back(
+            url.split("?")[0],
+            "Не сохранено: проверьте поля — число слишком большое, пустое название или буквы вместо цифр",
+        )
 
     @app.exception_handler(LoginRequired)
     async def login_required(request: Request, _: LoginRequired):
