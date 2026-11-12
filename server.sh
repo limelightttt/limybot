@@ -57,7 +57,7 @@ if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
 fi
 
 say "Запускаю (первый раз — несколько минут на сборку)"
-docker compose up -d --build --quiet-pull 2>&1 | grep -v "^ *$" | tail -3 || true
+docker compose up -d --build --quiet-pull
 
 link=""
 for _ in $(seq 1 30); do
