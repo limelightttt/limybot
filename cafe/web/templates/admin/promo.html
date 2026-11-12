@@ -1,5 +1,27 @@
 {% extends "admin/base.html" %}
 {% block content %}
+<section class="card no-print" id="news">
+  <h1>Рассылка гостям</h1>
+  <p>Сообщение придёт в Telegram всем, кто открывал вашего бота: <b>{{ audience }}</b> {{ "гостю" if audience % 10 == 1 and audience % 100 != 11 else "гостям" }}.
+    Новинка, акция, «сегодня работаем до 2 ночи». Под каждым сообщением гость видит «Не присылать новости».</p>
+  {% if left > 0 %}
+  <form method="post" action="/promo/news" class="stack" onsubmit="return confirm('Отправить {{ audience }} гостям? Отменить будет нельзя.')">
+    <textarea name="text" rows="5" maxlength="{{ max_len }}" required placeholder="Новый бургер «Чили-чиз» — только до воскресенья −20%. Закажите в боте 👇"></textarea>
+    <button class="primary" {% if not audience %}disabled{% endif %}>Отправить {{ audience }} гостям</button>
+  </form>
+  <p class="muted">Можно ещё {{ left }} {{ "раз" if left == 1 else "раза" }} за сутки: чаще — гости начинают блокировать бота, и он перестаёт до них доходить.</p>
+  {% else %}
+  <p class="muted">На сегодня рассылки закончились: не больше двух в сутки, чтобы гости не блокировали бота.</p>
+  {% endif %}
+  {% if broadcasts %}
+  <table class="report">
+    {% for b in broadcasts %}
+    <tr><td>{{ b.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m %H:%M") }}<br><small class="muted">{{ b.text[:80] }}{% if b.text|length > 80 %}…{% endif %}</small></td>
+      <td>{% if b.status == "done" %}доставлено {{ b.sent }} из {{ b.audience }}{% else %}идёт: {{ b.sent }} из {{ b.audience }}{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</section>
 <section class="card no-print">
   <h1>Постер с QR-кодом</h1>
   <p>Повесьте у кассы, на столы и на дверь: гость наводит камеру, открывает бота и заказывает заранее.

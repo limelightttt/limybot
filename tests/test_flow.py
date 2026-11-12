@@ -397,7 +397,7 @@ async def test_the_dress_rehearsal_runs():
 
     log = await rehearse()
     steps = dict(log.steps)
-    assert len(log.steps) == 21
+    assert len(log.steps) == 26
     assert any(
         "не для этого чата" in line
         for line in steps["Курьер пытается нажать «Принять» за кухню (подделанная кнопка) — нельзя"]
