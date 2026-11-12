@@ -14,7 +14,7 @@ from ..config import Settings
 from ..media import ensure_thumbs, thumb
 from ..models import APP_THEMES, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe
 from ..store import OPS, SESSION_TTL, Store
-from . import cafe_settings, menu, miniapp, ops, orders, promo
+from . import cafe_settings, menu, miniapp, ops, orders, promo, reports
 from .common import COOKIE, Bots, LoginRequired, OpsLoginRequired, Web, secure_cookie
 
 HERE = pathlib.Path(__file__).parent
@@ -86,6 +86,6 @@ def create_app(store: Store, settings: Settings, bots: Bots) -> FastAPI:
     async def home():
         return RedirectResponse("/orders", status_code=303)
 
-    for feature in (orders, menu, cafe_settings, promo, ops, miniapp):
+    for feature in (orders, menu, cafe_settings, promo, reports, ops, miniapp):
         app.include_router(feature.router(web))
     return app

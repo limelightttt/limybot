@@ -793,6 +793,14 @@ class Store:
         )
         return [self._order(r) for r in rows]
 
+    def orders_between(self, cafe_id: int, since: datetime, until: datetime) -> list[Order]:
+        """Every order placed in [since, until), cancelled ones too, oldest first: for reports."""
+        rows = self.db.execute(
+            "select * from orders where cafe_id = ? and created_at >= ? and created_at < ? order by id",
+            (cafe_id, since.astimezone(UTC).isoformat(), until.astimezone(UTC).isoformat()),
+        )
+        return [self._order(r) for r in rows]
+
     def customer_orders(self, cafe_id: int, user_id: int, limit: int = 5) -> list[Order]:
         rows = self.db.execute(
             "select * from orders where cafe_id = ? and user_id = ? order by id desc limit ?", (cafe_id, user_id, limit)
