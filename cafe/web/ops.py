@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse
 from .. import notify
 from ..billing import GRACE_DAYS, SUBSCRIPTION, TRIAL_DAYS, last_order_day
 from ..config import ROOT
-from ..media import drop_photo
+from ..media import BadImage, drop_photo
 from ..models import BOT_STATES, MAX_MONEY, Cafe
 from ..store import OPERATOR, OPS, SESSION_TTL
 from ..template import available_templates, connect_cafe, load_template, unpack_pack
@@ -165,7 +165,10 @@ def router(web: Web) -> APIRouter:
             except ValueError as e:  # also pydantic's ValidationError: the JSON is not a menu
                 return again(f"Шаблон не подошёл: {e}")
             trial = None if plan == "demo" else date.today() + timedelta(days=TRIAL_DAYS)
-            cafe_id = connect_cafe(store, settings.media_dir, token, username, name, chosen, trial)
+            try:
+                cafe_id = connect_cafe(store, settings.media_dir, token, username, name, chosen, trial)
+            except BadImage as e:  # nothing was created: the operator fixes the picture and tries again
+                return again(f"Картинка в архиве не подошла — {e}")
         await bots.sync()
         return back(f"/ops/cafes/{cafe_id}", "Заведение подключено. Отправьте владельцу ссылку-приглашение ниже.")
 

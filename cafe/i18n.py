@@ -3,7 +3,7 @@ The Mini App gets APP_TEXTS as JSON; the bot uses t(). Uzbek wording should be c
 
 from html import escape
 
-from .models import Cafe, Order, title
+from .models import SHOWN_LINES, Cafe, Order, title
 
 LANGS = ("ru", "uz")
 
@@ -54,6 +54,13 @@ BOT_TEXTS = {
         "transfer_howto": "Переведите {total} на карту <code>{card}</code> ({holder}) и нажмите «Я перевёл».",
         "transfer_claimed": "Ждём, пока кафе увидит перевод.",
         "payment_received": "Оплата по заказу №{number} получена ✅ Спасибо!",
+        "news_mute": "🔕 Не присылать новости",
+        "news_muted": "Хорошо, больше не будем присылать новости и акции. Вернуть — /news",
+        "news_on": "Готово: будем присылать новости и акции «{name}». Отключить — кнопка под любой новостью.",
+        "rate_ask": "Как вам заказ №{number}? Оцените, пожалуйста — «{name}» читает каждую оценку.",
+        "rate_thanks": "Спасибо за оценку! {stars}",
+        "rate_sorry": "Спасибо, что сказали. {stars}\nНам жаль — заведение свяжется с вами, если что-то пошло не так.",
+        "rate_no": "Этот заказ уже оценён",
         "we_will_write": "Мы напишем, когда заказ примут.",
         "status_line": "Статус: {status}",
         "copy_card": "📋 Скопировать номер карты",
@@ -96,6 +103,13 @@ BOT_TEXTS = {
         "transfer_howto": "{total} ni <code>{card}</code> kartaga ({holder}) oʻtkazing va «Oʻtkazdim» tugmasini bosing.",
         "transfer_claimed": "Kafe oʻtkazmani tekshirmoqda.",
         "payment_received": "№{number} buyurtma uchun toʻlov qabul qilindi ✅ Rahmat!",
+        "news_mute": "🔕 Yangiliklar yubormang",
+        "news_muted": "Yaxshi, endi yangilik va aksiyalarni yubormaymiz. Qaytarish — /news",
+        "news_on": "Tayyor: «{name}» yangilik va aksiyalarini yuboramiz. Oʻchirish — har bir yangilik ostidagi tugma.",
+        "rate_ask": "№{number} buyurtma qanday boʻldi? Baholang — «{name}» har bir bahoni oʻqiydi.",
+        "rate_thanks": "Baho uchun rahmat! {stars}",
+        "rate_sorry": "Aytganingiz uchun rahmat. {stars}\nAfsusdamiz — biror narsa notoʻgʻri boʻlsa, siz bilan bogʻlanishadi.",
+        "rate_no": "Bu buyurtma allaqachon baholangan",
         "we_will_write": "Buyurtma qabul qilinganda xabar beramiz.",
         "status_line": "Holati: {status}",
         "copy_card": "📋 Karta raqamini nusxalash",
@@ -177,6 +191,8 @@ APP_TEXTS = {
         "error_min_delivery": "Доставка — от {min}",
         "error_no_delivery": "Доставки сейчас нет",
         "error_address": "Укажите адрес доставки",
+        "error_too_many": "Слишком много заказов подряд — дождитесь, пока примут предыдущие",
+        "error_invalid": "Проверьте поля заказа: адрес, телефон или комментарий слишком длинные",
         "error_point": "Отметьте на карте, куда доставить",
         "error_far": "Сюда не доставляем — выберите другое место или самовывоз",
         "error_phone": "Укажите номер телефона",
@@ -241,6 +257,8 @@ APP_TEXTS = {
         "error_min_delivery": "Yetkazib berish — {min} dan",
         "error_no_delivery": "Hozir yetkazib berish yoʻq",
         "error_address": "Yetkazib berish manzilini kiriting",
+        "error_too_many": "Ketma-ket juda koʻp buyurtma — oldingilari qabul qilinishini kuting",
+        "error_invalid": "Buyurtma maydonlarini tekshiring: manzil, telefon yoki izoh juda uzun",
         "error_point": "Xaritada yetkazish joyini belgilang",
         "error_far": "Bu yerga yetkazmaymiz — boshqa joy yoki olib ketishni tanlang",
         "error_phone": "Telefon raqamini kiriting",
@@ -269,8 +287,10 @@ def order_text(cafe: Cafe, o: Order, lang: str) -> str:
     """What the customer sees about their order (HTML): the lines, the total, how it is received and paid."""
     lines = [
         f"{escape(title(ln['name'], ln['options']))} × {ln['qty']} — {money(cafe, ln['unit'] * ln['qty'], lang)}"
-        for ln in o.lines
+        for ln in o.lines[:SHOWN_LINES]
     ]
+    if len(o.lines) > SHOWN_LINES:  # a Telegram message holds 4096 characters
+        lines.append(f"… +{len(o.lines) - SHOWN_LINES}")
     if o.delivery_fee:
         lines.append(f"{t(lang, 'delivery_fee')} — {money(cafe, o.delivery_fee, lang)}")
     lines.append(f"<b>{t(lang, 'total')}: {money(cafe, o.total, lang)}</b>")

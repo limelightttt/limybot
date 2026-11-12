@@ -5,10 +5,9 @@ from datetime import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
-from PIL import Image, UnidentifiedImageError
 
 from ..delivery import parse_zones
-from ..media import drop_photo, save_photo
+from ..media import BadImage, drop_photo, save_photo
 from ..models import APP_THEMES, MAX_MONEY, Cafe
 from .common import Web, back
 
@@ -54,6 +53,8 @@ def router(web: Web) -> APIRouter:
         zone_fee: Annotated[list[str] | None, Form()] = None,
     ):
         cafe, _ = admin
+        if not name.strip() or not greeting.strip():  # spaces only: the bot would greet with an empty message
+            return back("/settings", "Название и приветствие не могут быть пустыми")
         try:
             hours = (None, None) if always_open else (time.fromisoformat(open_time), time.fromisoformat(close_time))
         except ValueError:
@@ -108,8 +109,8 @@ def router(web: Web) -> APIRouter:
             if data:
                 try:
                     name = save_photo(data, media)
-                except (UnidentifiedImageError, Image.DecompressionBombError):
-                    return back("/settings#brand", "Не получилось прочитать картинку — загрузите JPG или PNG")
+                except BadImage as e:
+                    return back("/settings#brand", f"Не сохранено: {e}")
                 drop_photo(media, store.set_cafe_image(cafe.id, kind, name))
             elif remove:
                 drop_photo(media, store.set_cafe_image(cafe.id, kind, None))

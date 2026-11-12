@@ -6,6 +6,7 @@ import asyncio
 import logging
 import socket
 import webbrowser
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date
 
@@ -67,7 +68,7 @@ class Runner:
 
     def state(self, cafe_id: int) -> str:
         if cafe_id in self.running:
-            return "running"
+            return "running" if not self.running[cafe_id].task.done() else "offline"
         token = self.token(cafe_id)
         problem = self.problems.get(cafe_id)
         return problem[0] if token and problem and problem[1] == token else "starting"
@@ -81,7 +82,8 @@ class Runner:
             if ops := self.store.meta("ops_bot_token"):
                 wanted[OPS] = ("служебный бот", ops)
             for cafe_id in list(self.running):
-                if cafe_id not in wanted or wanted[cafe_id][1] != self.running[cafe_id].token:
+                r = self.running[cafe_id]
+                if cafe_id not in wanted or wanted[cafe_id][1] != r.token or r.task.done():  # done: polling died
                     await self.stop(cafe_id)
             for cafe_id, (slug, token) in wanted.items():
                 if cafe_id not in self.running and self.problems.get(cafe_id) != ("rejected", token):
@@ -96,7 +98,7 @@ class Runner:
             self.problems[cafe_id] = ("rejected", token)
             return
         try:
-            me = await bot.get_me()
+            me = await bot.me()  # cached on the bot: polling does not ask Telegram again
         except TelegramUnauthorizedError:
             log.error("%s: Telegram не принял токен — смените его в панели оператора", slug)
             self.problems[cafe_id] = ("rejected", token)
@@ -153,8 +155,13 @@ class Runner:
 
     async def stop(self, cafe_id: int) -> None:
         r = self.running.pop(cafe_id)
-        await r.dp.stop_polling()
-        await r.task
+        with suppress(RuntimeError):  # polling already ended on its own
+            await r.dp.stop_polling()
+        try:
+            await r.task
+        except Exception:  # polling died on its own earlier: nothing to stop, and sync must go on
+            log.exception("cafe %s: the polling task had failed", cafe_id)
+        await r.bot.session.close()
 
     async def backup(self) -> None:
         today = date.today()
@@ -223,7 +230,10 @@ class Runner:
             if tunnel and tunnel.returncode is not None:
                 log.error("Туннель cloudflared остановился — витрина не открывается. Перезапустите ./run.sh")
                 tunnel = None
-            await self.sync()
+            try:
+                await self.sync()
+            except Exception:  # the loop must outlive any one bot's trouble
+                log.exception("sync failed, retrying")
 
 
 def port_is_free(host: str, port: int) -> bool:

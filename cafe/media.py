@@ -5,10 +5,16 @@ import secrets
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 PHOTO_SIZE = 1280
 THUMB_SIZE = 480
+MAX_BYTES = 15 * 1024 * 1024  # a phone photo is 2–8 MB
+MAX_PIXELS = 50_000_000  # ~8000×6000; a few KB of PNG can claim 13000×13000 and take gigabytes to decode
+
+
+class BadImage(ValueError):
+    """Not a picture we can use; the message is for the person who uploaded it."""
 
 
 def thumb(name: str) -> str:
@@ -22,15 +28,28 @@ def _save(img: Image.Image, path: Path, size: int) -> None:
 
 
 def save_photo(data: bytes, media_dir: Path) -> str:
-    """Phone photos are big and rotated via EXIF; logos come as PNG with transparency, which goes white."""
-    img = ImageOps.exif_transpose(Image.open(BytesIO(data)))
-    if img.mode != "RGB":
-        rgba = img.convert("RGBA")
-        img = Image.new("RGB", rgba.size, "white")
-        img.paste(rgba, mask=rgba.getchannel("A"))
-    name = f"{secrets.token_hex(8)}.jpg"
-    _save(img, media_dir / name, PHOTO_SIZE)
-    _save(img, media_dir / thumb(name), THUMB_SIZE)
+    """Phone photos are big and rotated via EXIF; logos come as PNG with transparency, which goes white.
+    Anything that is not a sane picture — not an image, truncated, absurdly large — raises BadImage before it can
+    eat the server's memory (every cafe runs in this one process)."""
+    if len(data) > MAX_BYTES:
+        raise BadImage("Файл больше 15 МБ — уменьшите фото")
+    try:
+        img = Image.open(BytesIO(data))
+        if img.width * img.height > MAX_PIXELS:  # known from the header, before anything is decoded
+            raise BadImage("Картинка слишком большая по размеру — нужна не больше 8000×6000")
+        img.draft("RGB", (PHOTO_SIZE * 2, PHOTO_SIZE * 2))  # JPEGs decode straight at a smaller size
+        img = ImageOps.exif_transpose(img)
+        if img.mode != "RGB":
+            rgba = img.convert("RGBA")
+            img = Image.new("RGB", rgba.size, "white")
+            img.paste(rgba, mask=rgba.getchannel("A"))
+        name = f"{secrets.token_hex(8)}.jpg"
+        _save(img, media_dir / name, PHOTO_SIZE)
+        _save(img, media_dir / thumb(name), THUMB_SIZE)
+    except BadImage:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError, SyntaxError) as e:
+        raise BadImage("Не получилось прочитать картинку — загрузите JPG или PNG") from e
     return name
 
 

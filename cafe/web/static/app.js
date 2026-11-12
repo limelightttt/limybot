@@ -314,8 +314,8 @@
       ? `<div class="field"><span>${T("map_title")}</span>
           ${mapFailed ? `<p class="hint warn">${T("map_failed")}</p><button type="button" class="link" data-locate>${T("locate")}</button>` : `<div id="map-slot"></div>`}
           <p class="hint${q.ok ? "" : " warn"}" id="quote">${quoteText(q)}</p></div>
-        <label>${T("street")}<input name="street" autocomplete="street-address" value="${esc(f.street)}" placeholder="${T("street_hint")}"></label>
-        <label>${T("details")}<input name="details" value="${esc(f.details)}" placeholder="${T("details_hint")}"></label>`
+        <label>${T("street")}<input name="street" maxlength="140" autocomplete="street-address" value="${esc(f.street)}" placeholder="${T("street_hint")}"></label>
+        <label>${T("details")}<input name="details" maxlength="140" value="${esc(f.details)}" placeholder="${T("details_hint")}"></label>`
       : "";
     const share = tg && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9")
       ? `<button type="button" class="link" data-share>${T("share_phone")}</button>` : "";
@@ -327,7 +327,7 @@
         <div class="row"><h2>${T("your_order")}</h2><button type="button" class="link" data-clear>${T("clear")}</button></div>
         <ul class="lines">${lines}</ul>
         <h2>${T("checkout")}</h2>${methods}${address}
-        <label>${T("phone")}<input name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${esc(f.phone)}" placeholder="+998 90 123 45 67"></label>
+        <label>${T("phone")}<input name="phone" type="tel" maxlength="30" inputmode="tel" autocomplete="tel" value="${esc(f.phone)}" placeholder="+998 90 123 45 67"></label>
         ${share}
         <label>${T("comment")}<input name="comment" maxlength="300" value="${esc(f.comment)}" placeholder="${T("comment_hint")}"></label>
         ${payment}
@@ -408,7 +408,9 @@
       body: body ? JSON.stringify(body) : undefined,
     });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw Object.assign(new Error(json.error || "network"), { code: json.error || "network" });
+    // 409 {error}: a rule of the cafe; 422: the form itself is off; no answer at all: the network
+    const code = json.error || (res.status === 422 ? "invalid" : "network");
+    if (!res.ok) throw Object.assign(new Error(code), { code });
     return json;
   }
 

@@ -91,7 +91,8 @@ async def test_delivery_steps_and_texts(env, store, demo):
         "Заказ №1 принят ✅ Скоро начнём готовить.",
         "Заказ №1 готовится 👨‍🍳",
         "Заказ №1 передан курьеру 🛵 Скоро будет у вас.",
-    ]  # nothing on «Доставлен»: the customer has it in hand
+        "Как вам заказ №1? Оцените, пожалуйста — «Demo Coffee» читает каждую оценку.",
+    ]  # on «Доставлен» no status, the guest has it in hand — only the question how it was
     assert "Заказ №1 · Доставлен" in session.texts(OWNER)[-1]
     assert store.order(demo.id, o.id).payment_status == "paid"
     await feed(tap(OWNER, f"st:{o.id}:ready"))  # a pickup step does not exist for delivery

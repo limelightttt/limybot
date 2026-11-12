@@ -3,9 +3,8 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Path, Request, UploadFile
-from PIL import Image, UnidentifiedImageError
 
-from ..media import drop_photo, save_photo
+from ..media import BadImage, drop_photo, save_photo
 from ..models import MAX_MONEY, Cafe
 from .common import Web, back
 
@@ -90,8 +89,8 @@ def router(web: Web) -> APIRouter:
         if data:
             try:
                 filename = save_photo(data, media)
-            except (UnidentifiedImageError, Image.DecompressionBombError):
-                return back(f"/items/{saved}", "Не получилось прочитать фото — загрузите JPG или PNG")
+            except BadImage as e:
+                return back(f"/items/{saved}", f"Фото не сохранено: {e}")
             drop_photo(media, store.set_photo(cafe.id, saved, filename))
         elif remove_photo:
             drop_photo(media, store.set_photo(cafe.id, saved, None))

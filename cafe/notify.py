@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 TZ = ZoneInfo("Asia/Tashkent")
 DIGEST_HOUR = 10  # the operator's morning digest, Tashkent time
 SUMMARY_HOUR = 9  # the owner's summary of the day before, the cafe's time
+REMIND_HOURS = range(10, 21)  # subscription reminders reach owners in the daytime, not at 00:00 when the date flips
 
 
 def price(store: Store) -> int:
@@ -81,7 +82,7 @@ async def tell_owners(store: Store, bot: Bot, cafe_id: int, text: str) -> bool:
     admins = store.admins(cafe_id)
     sent = False
     for user_id, _ in admins:
-        with suppress(TelegramForbiddenError, TelegramBadRequest):
+        with suppress(TelegramAPIError):
             await bot.send_message(user_id, text)
             sent = True
     return sent or not admins
@@ -166,8 +167,12 @@ class Notifier:
         now = now or datetime.now(UTC)
         ops = self.bot_for(OPS)
         for cafe in self.store.cafes():
-            await self._owner(cafe)
-            await self._summary(cafe, now)
+            try:  # one cafe's broken bot must not silence everyone after it
+                if now.astimezone(cafe.now().tzinfo).hour in REMIND_HOURS:
+                    await self._owner(cafe)
+                await self._summary(cafe, now)
+            except Exception:
+                log.exception("%s: notifications failed", cafe.slug)
             if ops:
                 for kind, key, text in operator_alerts(cafe, self.bot_state(cafe.id)):
                     if not self.store.reminded(cafe.id, kind, key) and await self.to_operators(ops, text):
@@ -206,7 +211,7 @@ class Notifier:
     async def to_operators(self, bot: Bot, text: str) -> bool:
         sent = False
         for chat_id, _ in self.store.operators():
-            with suppress(TelegramForbiddenError, TelegramBadRequest):
+            with suppress(TelegramAPIError):
                 await bot.send_message(chat_id, text)
                 sent = True
         return sent
