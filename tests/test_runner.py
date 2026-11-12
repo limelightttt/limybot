@@ -67,6 +67,12 @@ def test_summary_tells_the_operator_what_works(store, demo, settings):
     assert "cloudflared" in runner.summary()
 
 
+def test_the_panel_link_for_this_machine(store, settings):
+    link = Runner(store, settings).panel_link()
+    assert link.startswith(f"http://localhost:{settings.web_port}/ops/login/")
+    assert store.consume_login(link.rsplit("/", 1)[1]) == (OPS, OPERATOR)
+
+
 def test_summary_without_cafes(store, settings):
     assert "Подключить заведение" in Runner(store, settings).summary()
 

@@ -48,7 +48,8 @@ uv run ruff check . && uv run ruff format .
 uv run python -m cafe        # боты + админка + Mini App на :8000
 uv run python -m cafe add demo --token <T> --from clients/demo_coffee.json
 ```
-Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`. Сервер: `docker compose up -d`, CLI —
+Mac/Linux: `install.sh` (curl | sh) ставит uv и cloudflared, качает/обновляет код и кладёт на рабочий стол
+`limybot.command` (обновить + `./run.sh run --open`). Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`. Сервер: `docker compose up -d`, CLI —
 `docker compose exec app python -m cafe ...`.
 
 ## Соглашения и важные решения

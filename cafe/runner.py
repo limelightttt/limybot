@@ -5,6 +5,7 @@ stop without a restart. Once a day the database and photos are backed up (backup
 import asyncio
 import logging
 import socket
+import webbrowser
 from dataclasses import dataclass
 from datetime import date
 
@@ -176,9 +177,15 @@ class Runner:
         lines.append("─" * 64)
         return "\n".join(lines)
 
-    async def run(self, tunnel: asyncio.subprocess.Process | None = None) -> None:
+    def panel_link(self) -> str:
+        """For the browser on this very machine: localhost works at once, a fresh tunnel may need a few seconds."""
+        return f"http://localhost:{self.settings.web_port}/ops/login/{self.store.create_login(OPS, OPERATOR)}"
+
+    async def run(self, tunnel: asyncio.subprocess.Process | None = None, open_panel: bool = False) -> None:
         await self.sync()
         print(self.summary(), flush=True)
+        if open_panel:
+            webbrowser.open(self.panel_link())
         while True:
             await self.backup()
             await asyncio.sleep(SYNC_EVERY)
@@ -198,7 +205,7 @@ def port_is_free(host: str, port: int) -> bool:
     return True
 
 
-async def serve(settings: Settings) -> None:
+async def serve(settings: Settings, open_panel: bool = False) -> None:
     if not port_is_free(settings.web_host, settings.web_port):
         raise SystemExit(
             f"Порт {settings.web_port} занят — похоже, limybot уже запущен в другом окне Терминала.\n"
@@ -215,7 +222,7 @@ async def serve(settings: Settings) -> None:
     runner = Runner(store, settings)
     app = create_app(store, settings, runner)
     server = uvicorn.Server(uvicorn.Config(app, host=settings.web_host, port=settings.web_port, log_level="warning"))
-    bots = asyncio.create_task(runner.run(tunnel))
+    bots = asyncio.create_task(runner.run(tunnel, open_panel))
     try:
         await server.serve()  # until Ctrl+C
     finally:
