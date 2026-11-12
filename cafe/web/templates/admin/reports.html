@@ -1,0 +1,57 @@
+{% extends "admin/base.html" %}
+{% block title %}Отчёты · {{ cafe.name }}{% endblock %}
+{% block content %}
+{% set m = cafe.money %}
+<div class="chips-row">
+  {% for key, label in periods.items() %}<a class="pill{% if key == p %} on{% endif %}" href="/reports?p={{ key }}">{{ label }}</a>{% endfor %}
+</div>
+<form method="get" action="/reports" class="inline period">
+  <input type="date" name="since" value="{{ r.since.isoformat() }}" aria-label="С">
+  <span>—</span>
+  <input type="date" name="until" value="{{ r.until.isoformat() }}" aria-label="По">
+  <button>Показать</button>
+</form>
+
+<section class="card">
+  <p class="muted" style="margin-top:0">{% if r.since == r.until %}{{ r.since.strftime("%d.%m.%Y") }}{% else %}{{ r.since.strftime("%d.%m.%Y") }} — {{ r.until.strftime("%d.%m.%Y") }}{% endif %}</p>
+  <div class="money">
+    <div><small class="muted">Выручка</small><br><strong>{{ m(r.revenue) }}</strong></div>
+    <div><small class="muted">Заказов</small><br><strong>{{ r.orders }}</strong></div>
+    <div><small class="muted">Средний чек</small><br><strong>{{ m(r.average) }}</strong></div>
+  </div>
+  <table class="report">
+    <tr><td>Товары</td><td>{{ m(r.goods) }}</td></tr>
+    <tr><td>Доставка ({{ r.delivery_orders }} зак.)</td><td>{{ m(r.delivery) }}</td></tr>
+    <tr><td class="muted">Самовывоз</td><td class="muted">{{ r.pickup_orders }} зак.</td></tr>
+    {% for key, label in methods.items() %}{% if r.by_method.get(key) %}
+    <tr><td>{{ label }}</td><td>{{ m(r.by_method[key]) }}</td></tr>
+    {% endif %}{% endfor %}
+    <tr><td>Уже оплачено</td><td>{{ m(r.paid) }}</td></tr>
+    {% if r.unpaid_transfers %}<tr class="warn-row"><td>Переводы без подтверждения</td><td>{{ m(r.unpaid_transfers) }}</td></tr>{% endif %}
+    <tr><td class="muted">Отменено ({{ r.cancelled }})</td><td class="muted">{{ m(r.cancelled_sum) }}</td></tr>
+  </table>
+  <p class="muted">Выручка — без отменённых. «Уже оплачено» — наличные у выданных и доставленных заказов и подтверждённые
+    переводы; остальное ещё в пути или готовится.</p>
+  <a class="button" href="/reports.csv?since={{ r.since.isoformat() }}&until={{ r.until.isoformat() }}">Скачать заказы для Excel</a>
+</section>
+
+{% if r.top %}
+<section class="card">
+  <h2>Что заказывают</h2>
+  <table class="report">
+    {% for name, qty, total in r.top %}<tr><td>{{ name }}</td><td class="muted">× {{ qty }}</td><td>{{ m(total) }}</td></tr>{% endfor %}
+  </table>
+</section>
+{% endif %}
+
+{% if r.days|length > 1 %}
+<section class="card">
+  <h2>По дням</h2>
+  <table class="report days">
+    {% for day, n, total in r.days|reverse %}
+    <tr><td>{{ day.strftime("%d.%m") }}</td><td class="bar-cell"><span style="width:{{ (100 * total / best) if best else 0 }}%"></span></td><td class="muted">{{ n }}</td><td>{{ m(total) }}</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+{% endblock %}

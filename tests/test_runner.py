@@ -1,5 +1,6 @@
 """Starting limybot: the temporary https tunnel, the summary printed for the operator, friendly refusals."""
 
+import os
 import socket
 import stat
 
@@ -19,7 +20,8 @@ def fake_cloudflared(tmp_path, monkeypatch, script: str) -> None:
     exe = bin_dir / "cloudflared"
     exe.write_text("#!/bin/sh\n" + script)
     exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", str(bin_dir))
+    # first on PATH, the system after it: the fake script still needs `sleep`
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 async def test_tunnel_reports_its_address(tmp_path, monkeypatch):

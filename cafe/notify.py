@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
 
-from . import billing
+from . import billing, reports
 from .billing import days, last_order_day
 from .config import Settings
 from .models import BOT_STATES, Cafe, money
@@ -29,6 +29,7 @@ from .store import OPERATOR, OPS, Store
 log = logging.getLogger(__name__)
 TZ = ZoneInfo("Asia/Tashkent")
 DIGEST_HOUR = 10  # the operator's morning digest, Tashkent time
+SUMMARY_HOUR = 9  # the owner's summary of the day before, the cafe's time
 
 
 def price(store: Store) -> int:
@@ -166,6 +167,7 @@ class Notifier:
         ops = self.bot_for(OPS)
         for cafe in self.store.cafes():
             await self._owner(cafe)
+            await self._summary(cafe, now)
             if ops:
                 for kind, key, text in operator_alerts(cafe, self.bot_state(cafe.id)):
                     if not self.store.reminded(cafe.id, kind, key) and await self.to_operators(ops, text):
@@ -187,6 +189,19 @@ class Notifier:
         bot = self.bot_for(cafe.id)
         if bot and await tell_owners(self.store, bot, cafe.id, text):  # a stopped bot: try again later
             self.store.mark_reminded(cafe.id, kind, key)
+
+    async def _summary(self, cafe: Cafe, now: datetime) -> None:
+        """Every morning: yesterday in numbers, to the owner — only if there were orders."""
+        local = now.astimezone(cafe.now().tzinfo)
+        day = (local - timedelta(days=1)).date()
+        if local.hour < SUMMARY_HOUR or self.store.reminded(cafe.id, "daily", day.isoformat()):
+            return
+        bot = self.bot_for(cafe.id)
+        if not bot:
+            return
+        text = reports.daily_summary(self.store, cafe, day)
+        if text is None or await tell_owners(self.store, bot, cafe.id, text):
+            self.store.mark_reminded(cafe.id, "daily", day.isoformat())
 
     async def to_operators(self, bot: Bot, text: str) -> bool:
         sent = False
