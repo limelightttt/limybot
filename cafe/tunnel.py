@@ -15,6 +15,12 @@ def is_quick_tunnel(url: str) -> bool:
     return bool(QUICK_TUNNEL.fullmatch(url.rstrip("/")))
 
 
+def needs_tunnel(url: str) -> bool:
+    """No real https address of our own: empty, http://localhost (also the default without .env), or an old quick
+    tunnel — then a laptop run gets a fresh tunnel."""
+    return not url.startswith("https://") or is_quick_tunnel(url)
+
+
 async def open_tunnel(port: int) -> tuple[asyncio.subprocess.Process, str] | None:
     """Starts cloudflared for http://127.0.0.1:<port>; (process, https address), or None without cloudflared."""
     exe = shutil.which("cloudflared")

@@ -1,4 +1,5 @@
-"""python -m cafe [run]                                  — all bots, the admins, the operator panel and the Mini Apps
+"""python -m cafe [run] [--open]                         — all bots, the admins, the operator panel and the Mini Apps;
+                                                         --open also opens the panel in this machine's browser
 python -m cafe ops                                     — a login link to the operator panel (/ops)
 python -m cafe add --token <TOKEN> [--from clients/x.json] — connect a cafe (the panel does the same)
 python -m cafe remove <name>                           — delete a cafe and everything of it
@@ -47,7 +48,8 @@ def public_url(settings: Settings) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(prog="python -m cafe", description="limybot: Telegram-боты заказов для кафе")
     sub = p.add_subparsers(dest="cmd")
-    sub.add_parser("run", help="запустить всех ботов, админки и панель оператора (по умолчанию)")
+    run = sub.add_parser("run", help="запустить всех ботов, админки и панель оператора (по умолчанию)")
+    run.add_argument("--open", action="store_true", help="сразу открыть панель оператора в браузере")
     sub.add_parser("ops", help="ссылка для входа в панель оператора")
     add = sub.add_parser("add", help="подключить новое кафе (то же есть в панели оператора)")
     add.add_argument("--token", required=True, help="токен бота от @BotFather")
@@ -73,7 +75,7 @@ def main() -> None:
         logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
         logging.getLogger("aiogram").setLevel(logging.WARNING)  # "update handled" per message drowns what matters
         try:
-            asyncio.run(serve(settings))
+            asyncio.run(serve(settings, open_panel=getattr(args, "open", False)))
         except KeyboardInterrupt:
             print("\nlimybot остановлен.")
         return

@@ -10,7 +10,7 @@ from cafe.runner import Runner, port_is_free
 from cafe.store import OPERATOR, OPS
 from cafe.template import slug_for
 from cafe.tokens import TokenError, bot_profile
-from cafe.tunnel import close_tunnel, is_quick_tunnel, open_tunnel
+from cafe.tunnel import close_tunnel, is_quick_tunnel, needs_tunnel, open_tunnel
 
 
 def fake_cloudflared(tmp_path, monkeypatch, script: str) -> None:
@@ -48,6 +48,12 @@ def test_old_tunnel_addresses_are_not_kept():
     assert not is_quick_tunnel("https://admin.limybot.uz") and not is_quick_tunnel("")
 
 
+def test_a_tunnel_unless_there_is_a_real_https_address():
+    for url in ("", "http://localhost:8000", "https://old-words.trycloudflare.com"):
+        assert needs_tunnel(url), url
+    assert not needs_tunnel("https://admin.limybot.uz")
+
+
 def test_summary_tells_the_operator_what_works(store, demo, settings):
     runner = Runner(store, settings)
     settings.public_url = "https://brave-new-words.trycloudflare.com"
@@ -59,6 +65,12 @@ def test_summary_tells_the_operator_what_works(store, demo, settings):
     assert runner.state(demo.id) == "rejected" and "не принял токен" in runner.summary()
     settings.public_url = "http://localhost:8000"
     assert "cloudflared" in runner.summary()
+
+
+def test_the_panel_link_for_this_machine(store, settings):
+    link = Runner(store, settings).panel_link()
+    assert link.startswith(f"http://localhost:{settings.web_port}/ops/login/")
+    assert store.consume_login(link.rsplit("/", 1)[1]) == (OPS, OPERATOR)
 
 
 def test_summary_without_cafes(store, settings):
