@@ -10,7 +10,7 @@ from cafe.runner import Runner, port_is_free
 from cafe.store import OPERATOR, OPS
 from cafe.template import slug_for
 from cafe.tokens import TokenError, bot_profile
-from cafe.tunnel import close_tunnel, is_quick_tunnel, open_tunnel
+from cafe.tunnel import close_tunnel, is_quick_tunnel, needs_tunnel, open_tunnel
 
 
 def fake_cloudflared(tmp_path, monkeypatch, script: str) -> None:
@@ -46,6 +46,12 @@ async def test_no_tunnel_without_cloudflared_or_an_address(tmp_path, monkeypatch
 def test_old_tunnel_addresses_are_not_kept():
     assert is_quick_tunnel("https://spreading-fly-protest-cross.trycloudflare.com/")
     assert not is_quick_tunnel("https://admin.limybot.uz") and not is_quick_tunnel("")
+
+
+def test_a_tunnel_unless_there_is_a_real_https_address():
+    for url in ("", "http://localhost:8000", "https://old-words.trycloudflare.com"):
+        assert needs_tunnel(url), url
+    assert not needs_tunnel("https://admin.limybot.uz")
 
 
 def test_summary_tells_the_operator_what_works(store, demo, settings):

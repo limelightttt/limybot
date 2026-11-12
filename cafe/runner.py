@@ -26,7 +26,7 @@ from .i18n import LANGS
 from .models import BOT_STATES
 from .store import OPERATOR, OPS, Store
 from .tokens import bot_profile
-from .tunnel import close_tunnel, is_quick_tunnel, open_tunnel
+from .tunnel import close_tunnel, needs_tunnel, open_tunnel
 from .web import create_app
 
 log = logging.getLogger(__name__)
@@ -205,7 +205,7 @@ async def serve(settings: Settings) -> None:
             "Закройте его (Ctrl+C в том окне) и запустите снова."
         )
     tunnel = None
-    if not settings.public_url or is_quick_tunnel(settings.public_url):
+    if needs_tunnel(settings.public_url):
         found = await open_tunnel(settings.web_port)
         if found:
             tunnel, settings.public_url = found
