@@ -139,6 +139,8 @@ def router(web: Web) -> APIRouter:
 
         if taken := store.cafe_by_token(token):
             return again(f"Этот бот уже подключён — «{taken.name}». Для другого заведения нужен другой бот.")
+        if token == store.meta("ops_bot_token"):
+            return again("Это ваш служебный бот — он для уведомлений вам. Для заведения нужен отдельный бот.")
         try:
             username, name = await bots.check(token)
         except TokenError as e:
@@ -225,6 +227,8 @@ def router(web: Web) -> APIRouter:
         taken = store.cafe_by_token(token)
         if taken and taken.id != cafe_id:
             return back(f"/ops/cafes/{cafe_id}", f"Этот бот уже подключён к «{taken.name}»")
+        if token == store.meta("ops_bot_token"):
+            return back(f"/ops/cafes/{cafe_id}", "Это ваш служебный бот — для заведения нужен отдельный бот")
         try:
             username, _ = await bots.check(token)
         except TokenError as e:
