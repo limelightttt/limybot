@@ -34,7 +34,7 @@ from aiogram.types import (
 from . import delivery, i18n
 from .config import Settings
 from .i18n import t
-from .models import PAYMENT_METHODS, PAYMENT_STATUSES, ROLES, STATUSES, Cafe, Order, title
+from .models import PAYMENT_METHODS, PAYMENT_STATUSES, ROLES, STATUSES, Cafe, Order, orders_word, title
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -97,7 +97,9 @@ def staff_card(cafe: Cafe, o: Order, role: str = "staff") -> tuple[str, InlineKe
     pay = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
     if role == "courier":
         collect = (
-            f"💵 Получить с гостя: {cafe.money(o.total)}"
+            "✖️ Заказ отменён — никуда не ехать"
+            if o.status == "cancelled"
+            else f"💵 Получить с гостя: {cafe.money(o.total)}"
             if o.payment_method == "cash" and o.payment_status != "paid"
             else f"✅ Оплачено, с гостя ничего не брать ({cafe.money(o.total)})"
             if o.payment_status == "paid"
@@ -287,7 +289,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
                 "и напишите там команду:\n"
                 "/staff — кухня: все заказы\n"
                 "/couriers — курьеры: доставки с адресом и точкой\n"
-                "/finance — финансы: переводы на карту и отмены\n\n"
+                "/finance — финансы: переводы на карту\n\n"
                 "/admin — вход в админку: меню, цены, фото, заказы\n"
                 "/stats — заказы за сегодня"
             )
@@ -375,6 +377,12 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await q.answer("Оплата уже отмечена")
         await q.answer("Оплачен")
 
+    @r.callback_query(F.data.regexp(r"^(st|pay):"))
+    async def not_your_button(q: CallbackQuery):
+        """A staff button pressed where it does not belong (another group's, or by someone outside the staff):
+        answered, so the button does not spin forever, and nothing changes."""
+        await q.answer("Эта кнопка не для этого чата — её нажимает кухня, курьеры или финансы", show_alert=True)
+
     # --- owner ---
     async def is_admin(m: Message, cafe: Cafe) -> bool:
         return store.is_admin(cafe.id, m.from_user.id)
@@ -399,7 +407,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         "courier": "Готово: это группа курьеров «{name}». Сюда приходят принятые заказы на доставку — адрес, точка на "
         "карте, телефон, сколько взять с гостя — и кнопки «Передан курьеру» и «Доставлен».",
         "finance": "Готово: это группа финансов «{name}». Сюда приходят заказы с переводом на карту — проверьте "
-        "поступление и нажмите «Оплата получена», — и отмены.",
+        "поступление и нажмите «Оплата получена», — и сообщения, если такой заказ отменили.",
     }
     UNBOUND = {
         "staff": "Заказы снова приходят администраторам в личные сообщения.\n"
@@ -420,7 +428,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     @r.message(Command("stats"), is_admin)
     async def stats(m: Message, cafe: Cafe):
         n, total = store.stats(cafe.id, cafe.today())
-        await m.answer(f"Сегодня: {n} заказов на {cafe.money(total)}")
+        await m.answer(f"Сегодня: {orders_word(n)} на {cafe.money(total)}")
 
     @r.message(Command("admin", "staff", "couriers", "finance", "stats"))
     async def not_admin(m: Message, cafe: Cafe):

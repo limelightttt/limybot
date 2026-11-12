@@ -45,7 +45,8 @@ cafe/
                   подписка, пауза, смена токена, удаление, вход в админку заведения
     miniapp.py    витрина гостя /app/<slug> (templates/app/index.html, static/app.js, static/app.css)
 clients/        стартовые шаблоны кафе (demo_coffee.json); clients/private/<бренд>/ — пакеты с фото, не в git
-tests/          conftest.py (FakeSession, FakeBots, фикстуры, order(), init_data()), test_store, test_flow,
+tests/          conftest.py (FakeSession, FakeBots, фикстуры, order(), init_data()), rehearsal.py (прогон дня → HTML),
+                test_store, test_flow,
                 test_miniapp, test_web, test_ops, test_runner, schema_v0.sql (схема до миграций)
 Dockerfile, compose.yaml, Caddyfile — деплой: docker compose up -d, Caddy сам выпускает HTTPS для DOMAIN
 server.sh       установка/обновление на Ubuntu одной строкой (curl | sh): Docker, /opt/limybot, домен в .env,
@@ -60,6 +61,7 @@ uv run pytest                # все тесты (без сети)
 uv run ruff check . && uv run ruff format .
 uv run python -m cafe        # боты + админка + Mini App на :8000
 uv run python -m cafe add demo --token <T> --from clients/demo_coffee.json
+uv run python -m tests.rehearsal out.html   # прогон рабочего дня: три группы, владелец, гости — что видит каждый чат
 ```
 Mac/Linux: `install.sh` (curl | sh) ставит uv и cloudflared, качает/обновляет код и кладёт на рабочий стол
 `limybot.command` (обновить + `./run.sh run --open`). Windows: `run.cmd [аргументы]`, Linux: `./run.sh [аргументы]`. Сервер: `docker compose up -d`, CLI —

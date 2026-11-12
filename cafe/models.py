@@ -47,6 +47,18 @@ PAYMENT_METHODS = {"cash": "При получении", "transfer": "Перев�
 PAYMENT_STATUSES = {"pending": "Не оплачен", "claimed": "Клиент сообщил о переводе", "paid": "Оплачен"}
 
 
+def orders_word(n: int) -> str:
+    """1 заказ, 2 заказа, 5 заказов."""
+    word = (
+        "заказ"
+        if n % 10 == 1 and n % 100 != 11
+        else "заказа"
+        if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14
+        else "заказов"
+    )
+    return f"{n} {word}"
+
+
 def money(amount: int, currency: str = "сум") -> str:
     return f"{amount:,}".replace(",", " ") + f" {currency}"
 
