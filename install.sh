@@ -39,19 +39,30 @@ if ! command -v cloudflared >/dev/null 2>&1; then
   chmod +x "$BIN/cloudflared"
 fi
 
-# the code: git if it works (on a Mac without developer tools `git` only offers to install them), else an archive
-if [ -d "$DIR/.git" ] && git -C "$DIR" status >/dev/null 2>&1; then
+# the code: git when it really works, else an archive
+has_git() {  # on a Mac without the developer tools /usr/bin/git only pops up their installer
+  if [ "$(uname -s)" = Darwin ] && ! xcode-select -p >/dev/null 2>&1; then return 1; fi
+  git --version >/dev/null 2>&1
+}
+if [ -d "$DIR/.git" ] && has_git; then
   say "Обновляю limybot в $DIR"
   ( cd "$DIR" && { [ "$(git branch --show-current)" = main ] || git checkout -q main; } && git pull -q --ff-only ) \
     || say "Обновить не вышло (нет интернета или правки в файлах) — запускаю то, что есть"
-elif git --version >/dev/null 2>&1 && [ ! -d "$DIR" ]; then
+elif has_git && [ -z "$(ls -A "$DIR" 2>/dev/null)" ]; then
   say "Скачиваю limybot в $DIR"
-  git clone -q "https://github.com/$REPO" "$DIR"
+  git clone -q "https://github.com/$REPO" "$DIR" || true
 else
   say "Скачиваю limybot в $DIR"
-  mkdir -p "$DIR"
-  curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" | tar -xz -C "$DIR" --strip-components 1 \
-    || say "Скачать не вышло (нет интернета?) — запускаю то, что есть"
+  tgz="$(mktemp)"
+  curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" -o "$tgz" \
+    && mkdir -p "$DIR" && tar -xzf "$tgz" -C "$DIR" --strip-components 1 \
+    || say "Скачать не вышло — проверю, что уже есть"
+  rm -f "$tgz"
+fi
+if [ ! -f "$DIR/run.sh" ]; then
+  echo "Не получилось скачать limybot в $DIR. Проверьте интернет (если включён VPN — выключите)" >&2
+  echo "и вставьте строку установки ещё раз." >&2
+  exit 1
 fi
 chmod +x "$DIR/run.sh" "$DIR/install.sh" 2>/dev/null || true
 
@@ -60,8 +71,7 @@ if [ -d "$HOME/Desktop" ]; then
   cat >"$icon" <<EOF
 #!/bin/sh
 # limybot: update, start all the bots and open the operator panel. Keep this window open; Ctrl+C stops.
-"$DIR/install.sh" --quiet
-exec "$DIR/run.sh" run --open
+"$DIR/install.sh" --quiet && exec "$DIR/run.sh" run --open
 EOF
   chmod +x "$icon"
 fi
