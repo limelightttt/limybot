@@ -274,11 +274,11 @@ def membership(by: int, joined: bool, chat_id: int = GROUP) -> Update:
     )
 
 
-async def test_adding_the_bot_to_a_group_makes_it_the_staff_group(env, store, demo):
+async def test_a_group_becomes_the_kitchen_by_staff(env, store, demo):
     feed, place, session = env
-    await feed(membership(CUSTOMER, joined=True, chat_id=-600))  # someone else's group
-    assert store.cafe(demo.id).staff_chat_id is None and "/staff" in session.texts(-600)[-1]
-    await feed(membership(OWNER, joined=True))
+    await feed(membership(OWNER, joined=True))  # adding the bot alone does nothing and says nothing
+    assert store.cafe(demo.id).staff_chat_id is None and session.texts(GROUP) == []
+    await feed(message(OWNER, "/staff", chat=Chat(id=GROUP, type="supergroup")))
     assert store.cafe(demo.id).staff_chat_id == GROUP and "сюда приходят все заказы" in session.texts(GROUP)[-1]
     await place()
     assert "Заказ №1 · Новый" in session.texts(GROUP)[-1]
@@ -334,18 +334,10 @@ async def test_groups_for_couriers_and_finance(env, store, demo):
     feed, place, session = env
     store.update_cafe(demo.id, card_number="8600 1234 5678 9012", card_holder="Ali")
     kitchen, couriers, money = GROUP, -700, -800
-    await feed(membership(OWNER, joined=True))  # the first group: the kitchen, no questions
-    assert store.cafe(demo.id).staff_chat_id == kitchen
-    await feed(membership(OWNER, joined=True, chat_id=couriers))  # the next one: which is it?
-    ask = session.messages(couriers)[-1]
-    assert "Для чего эта группа" in ask.text and [b.callback_data for b in buttons(ask)] == [
-        "role:staff",
-        "role:courier",
-        "role:finance",
-    ]
-    await feed(tap(CUSTOMER, "role:courier", chat=Chat(id=couriers, type="supergroup")))
-    assert alerts(session)[-1].startswith("Выбрать может только администратор")
-    await feed(tap(OWNER, "role:courier", chat=Chat(id=couriers, type="supergroup")))
+    await feed(message(OWNER, "/staff", chat=Chat(id=kitchen, type="supergroup")))
+    await feed(message(CUSTOMER, "/couriers", chat=Chat(id=couriers, type="supergroup")))
+    assert store.cafe(demo.id).courier_chat_id is None  # not an admin: told why, nothing changes
+    await feed(message(OWNER, "/couriers", chat=Chat(id=couriers, type="supergroup")))
     assert store.cafe(demo.id).courier_chat_id == couriers and "группа курьеров" in session.texts(couriers)[-1]
     await feed(message(OWNER, "/finance", chat=Chat(id=money, type="supergroup")))
     assert store.cafe(demo.id).finance_chat_id == money
@@ -357,7 +349,7 @@ async def test_groups_for_couriers_and_finance(env, store, demo):
         "💳 Оплата получена"
     ]
     assert "Оплата получена" not in str(buttons(session.messages(kitchen)[-1]))  # money is checked by finance
-    assert len(new_messages(session, couriers)) == 1  # only the question: nothing for couriers until it is accepted
+    assert len(new_messages(session, couriers)) == 2  # "only admins" and "done": no order until it is accepted
 
     await feed(tap(CUSTOMER, f"st:{o.id}:accepted", chat=Chat(id=couriers, type="supergroup")))
     assert store.order(demo.id, o.id).status == "new"  # a courier cannot accept for the kitchen
