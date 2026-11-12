@@ -14,7 +14,7 @@
     lang: user && user.language_code === "uz" ? "uz" : "ru",
     view: "menu", // menu | cart | done
     cart: loadCart(),
-    form: { method: "pickup", phone: "", address: "", comment: "", payment: D.payments[0] },
+    form: { method: "pickup", phone: "", address: "", comment: "", payment: D.payments[0], point: null },
     sending: false,
     done: null,
   };
@@ -85,6 +85,108 @@
     saveCart();
   }
 
+  // --- delivery: price by the pin on the map (the same rule as delivery.fee on the server) ---
+  function km(a, b) {
+    const rad = (x) => (x * Math.PI) / 180;
+    const h = Math.sin(rad(b[0] - a[0]) / 2) ** 2 + Math.cos(rad(a[0])) * Math.cos(rad(b[0])) * Math.sin(rad(b[1] - a[1]) / 2) ** 2;
+    return 2 * 6371 * Math.asin(Math.sqrt(h));
+  }
+  function quote() {
+    const p = state.form.point;
+    const zones = D.delivery.zones;
+    const dist = p && D.delivery.point ? km(D.delivery.point, p) : null;
+    if (!zones.length) return { ok: true, fee: D.delivery.fee, km: dist };
+    if (!p) return { ok: false, need: "set_point" };
+    const zone = zones.find(([limit]) => dist <= limit);
+    return zone ? { ok: true, fee: zone[1], km: dist } : { ok: false, need: "far", km: dist };
+  }
+  function quoteText(q) {
+    if (!q.ok) return T(q.need, { km: D.delivery.zones.length ? D.delivery.zones[D.delivery.zones.length - 1][0] : "" });
+    if (q.km === null) return T("map_hint");
+    return `${T("distance", { km: q.km.toFixed(1).replace(".", ",") })} · ${T("delivery_fee")}: ${money(q.fee)}`;
+  }
+
+  // The map is made once and moved into each new render of the cart, so re-renders do not reload it.
+  // MapLibre 4.7.1 (static/vendor, BSD) + OpenFreeMap tiles: free, no keys, commercial use allowed.
+  const MAP_JS = "/static/vendor/maplibre-gl.js";
+  const MAP_CSS = "/static/vendor/maplibre-gl.css";
+  const MAP_STYLE = "https://tiles.openfreemap.org/styles/liberty";
+  let map = null;
+  let mapBox = null;
+  let mapFailed = false;
+  function mapElement() {
+    if (mapBox) return mapBox;
+    mapBox = document.createElement("div");
+    mapBox.className = "mapbox";
+    mapBox.innerHTML = `<div class="canvas"></div>
+      <svg class="pin" viewBox="0 0 24 36" aria-hidden="true"><path d="M12 0C5.4 0 0 5.3 0 11.9 0 20.8 12 36 12 36s12-15.2 12-24.1C24 5.3 18.6 0 12 0z"/><circle cx="12" cy="12" r="4.5"/></svg>
+      <button type="button" class="locate" data-locate>${T("locate")}</button>`;
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = MAP_CSS;
+    document.head.append(css);
+    const js = document.createElement("script");
+    js.src = MAP_JS;
+    js.onload = startMap;
+    js.onerror = mapError;
+    document.head.append(js);
+    if (tg && tg.isVersionAtLeast && tg.isVersionAtLeast("7.7")) tg.disableVerticalSwipes(); // a swipe on the map must not close the app
+    return mapBox;
+  }
+  function startMap() {
+    const at = state.form.point || D.delivery.center;
+    try {
+      map = new maplibregl.Map({
+        container: mapBox.querySelector(".canvas"),
+        style: MAP_STYLE,
+        center: [at[1], at[0]],
+        zoom: state.form.point ? 16 : D.delivery.point ? 13 : 11,
+        attributionControl: { compact: true },
+        dragRotate: false,
+        pitchWithRotate: false,
+      });
+    } catch {
+      return mapError(); // no WebGL
+    }
+    map.touchZoomRotate.disableRotation();
+    map.on("moveend", (e) => {
+      if (!e.originalEvent && !e.byUs) return; // only where the guest moved it
+      const c = map.getCenter();
+      setPoint([c.lat, c.lng]);
+    });
+    const failed = setTimeout(mapError, 20000);
+    map.once("load", () => clearTimeout(failed));
+  }
+  function mapError() {
+    mapFailed = true;
+    if (state.view === "cart") render();
+  }
+  function setPoint(point) {
+    state.form.point = point;
+    updateQuote();
+  }
+  function locate() {
+    const go = (lat, lon) => {
+      if (map) map.jumpTo({ center: [lon, lat], zoom: 17 }, { byUs: true });
+      else setPoint([lat, lon]);
+      haptic("light");
+    };
+    const browser = () =>
+      navigator.geolocation
+        ? navigator.geolocation.getCurrentPosition(
+            (pos) => go(pos.coords.latitude, pos.coords.longitude),
+            () => toast(T("locate_failed")),
+            { enableHighAccuracy: true, timeout: 10000 },
+          )
+        : toast(T("locate_failed"));
+    const lm = tg && tg.isVersionAtLeast && tg.isVersionAtLeast("8.0") && tg.LocationManager;
+    if (!lm) return browser();
+    lm.init(() => {
+      if (!lm.isLocationAvailable) return browser();
+      lm.getLocation((loc) => (loc ? go(loc.latitude, loc.longitude) : toast(T("locate_failed"))));
+    });
+  }
+
   // --- views ---
   function render() {
     $("#lang").textContent = state.lang === "uz" ? "RU" : "UZ";
@@ -144,8 +246,9 @@
     const sub = subtotal();
     const deliveryOk = D.delivery.enabled && sub >= D.delivery.min;
     if (f.method === "delivery" && !deliveryOk) f.method = "pickup";
-    const fee = f.method === "delivery" ? D.delivery.fee : 0;
-    const canOrder = !!initData && D.active && D.open;
+    const q = f.method === "delivery" ? quote() : { ok: true, fee: 0 };
+    const fee = q.ok ? q.fee : 0;
+    const canOrder = !!initData && D.active && D.open && q.ok;
     const why = !D.active ? T("inactive") : !D.open ? T("closed", { hours: D.hours }) : T("open_in_telegram");
     const lines = state.cart
       .map((l, i) => `<li><div class="grow"><b>${esc(lineTitle(l))}</b><small>${money(unit(l))}</small></div>
@@ -160,7 +263,10 @@
       ${D.delivery.enabled && !deliveryOk ? `<p class="hint">${T("delivery_from", { min: money(D.delivery.min) })}</p>` : ""}
       ${f.method === "pickup" && D.pickup_address ? `<p class="hint">📍 ${esc(D.pickup_address)}</p>` : ""}`;
     const address = f.method === "delivery"
-      ? `<label>${T("address")}<textarea name="address" rows="2" placeholder="${T("address_hint")}">${esc(f.address)}</textarea></label>`
+      ? `<div class="field"><span>${T("map_title")}</span>
+          ${mapFailed ? `<p class="hint warn">${T("map_failed")}</p><button type="button" class="link" data-locate>${T("locate")}</button>` : `<div id="map-slot"></div>`}
+          <p class="hint${q.ok ? "" : " warn"}" id="quote">${quoteText(q)}</p></div>
+        <label>${T("address")}<textarea name="address" rows="2" placeholder="${T("address_hint")}">${esc(f.address)}</textarea></label>`
       : "";
     const share = tg && tg.isVersionAtLeast && tg.isVersionAtLeast("6.9")
       ? `<button type="button" class="link" data-share>${T("share_phone")}</button>` : "";
@@ -177,13 +283,32 @@
         <label>${T("comment")}<input name="comment" maxlength="300" value="${esc(f.comment)}" placeholder="${T("comment_hint")}"></label>
         ${payment}
         ${f.payment === "cash" && D.payment_note ? `<p class="hint">💳 ${esc(D.payment_note)}</p>` : ""}
-        <ul class="summary"><li><span>${T("subtotal")}</span><span>${money(sub)}</span></li>
-          ${fee ? `<li><span>${T("delivery_fee")}</span><span>${money(fee)}</span></li>` : ""}
-          <li class="total"><span>${T("total")}</span><span>${money(sub + fee)}</span></li></ul>
-        ${canOrder ? "" : `<p class="hint warn">${why}</p>`}
+        <ul class="summary" id="summary">${summary(sub, fee)}</ul>
+        ${canOrder || !q.ok ? "" : `<p class="hint warn">${why}</p>`}
       </div>
       <div class="bar"><button type="button" class="primary" data-confirm ${canOrder && !state.sending ? "" : "disabled"}>
         ${T("confirm", { total: money(sub + fee) })}</button></div>`;
+    const slot = $("#map-slot");
+    if (slot) slot.replaceWith(mapElement());
+  }
+  function summary(sub, fee) {
+    return `<li><span>${T("subtotal")}</span><span>${money(sub)}</span></li>
+      ${fee ? `<li><span>${T("delivery_fee")}</span><span>${money(fee)}</span></li>` : ""}
+      <li class="total"><span>${T("total")}</span><span>${money(sub + fee)}</span></li>`;
+  }
+  // the pin moved: only the price parts change, the rest of the page (and what is being typed) stays
+  function updateQuote() {
+    if (state.view !== "cart" || state.form.method !== "delivery") return;
+    const q = quote();
+    const sub = subtotal();
+    const fee = q.ok ? q.fee : 0;
+    const el = $("#quote");
+    el.textContent = quoteText(q);
+    el.classList.toggle("warn", !q.ok);
+    $("#summary").innerHTML = summary(sub, fee);
+    const button = $("[data-confirm]");
+    button.textContent = T("confirm", { total: money(sub + fee) });
+    button.disabled = !(initData && D.active && D.open && q.ok) || state.sending;
   }
 
   function renderDone() {
@@ -248,6 +373,8 @@
         method: f.method,
         phone: f.phone,
         address: f.method === "delivery" ? f.address : "",
+        lat: f.method === "delivery" && f.point ? f.point[0] : null,
+        lon: f.method === "delivery" && f.point ? f.point[1] : null,
         comment: f.comment,
         payment: f.payment,
         lang: state.lang,
@@ -327,6 +454,7 @@
       state.form.payment = d.pay;
       render();
     } else if ("share" in d) sharePhone();
+    else if ("locate" in d) locate();
     else if ("confirm" in d) submit();
     else if ("copy" in d) navigator.clipboard?.writeText(d.copy).then(() => toast(T("copied")), () => {});
     else if ("closeapp" in d) (tg && initData ? tg.close() : go("menu"));
@@ -362,6 +490,8 @@
         state.lang = me.lang;
         state.form.phone ||= me.phone || "";
         state.form.address ||= me.address || "";
+        state.form.point ||= me.point;
+        if (me.point && map) map.jumpTo({ center: [me.point[1], me.point[0]], zoom: 16 });
         if (me.repeat) {
           state.cart = []; // "repeat" means exactly that order, at today's prices
           me.repeat.lines.forEach((l) => add(l.item_id, l.option_ids, l.qty));

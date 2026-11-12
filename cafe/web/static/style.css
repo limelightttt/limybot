@@ -127,3 +127,12 @@ table.payments td { padding: 8px 4px; border-top: 1px solid var(--line, #e5e0da)
 table.payments td:last-child { text-align: right; }
 fieldset.plain { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
 fieldset.plain legend { padding: 0; margin-bottom: 4px; }
+
+/* the cafe's point on the map (settings) */
+.mapbox { position: relative; height: 260px; border-radius: 12px; overflow: hidden; background: var(--line); }
+.mapbox .pin { position: absolute; z-index: 2; left: 50%; top: 50%; width: 28px; height: 42px; transform: translate(-50%, -100%);
+  pointer-events: none; filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.35)); }
+.mapbox .pin path { fill: var(--accent); }
+.mapbox .pin circle { fill: var(--on-accent); }
+.zone input { width: 6.5em; flex: none; }
+.zone span { color: var(--muted); white-space: nowrap; }

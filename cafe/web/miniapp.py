@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from .. import delivery
 from ..bot import send_to_customer, send_to_staff
 from ..i18n import APP_TEXTS, lang_of
 from ..media import thumb
@@ -35,6 +36,8 @@ class OrderIn(BaseModel):
     comment: str = Field("", max_length=300)
     payment: Literal["cash", "transfer"]
     lang: Literal["ru", "uz"]
+    lat: float | None = Field(None, ge=-90, le=90)  # the delivery pin
+    lon: float | None = Field(None, ge=-180, le=180)
 
 
 class LangIn(BaseModel):
@@ -104,7 +107,14 @@ def router(web: Web) -> APIRouter:
             "hours": cafe.hours(),
             "active": cafe.active(),
             "pickup_address": cafe.pickup_address,
-            "delivery": {"enabled": cafe.delivery_enabled, "min": cafe.delivery_min, "fee": cafe.delivery_fee},
+            "delivery": {
+                "enabled": cafe.delivery_enabled,
+                "min": cafe.delivery_min,
+                "fee": cafe.delivery_fee,
+                "zones": cafe.delivery_zones if delivery.by_zones(cafe) else [],
+                "point": cafe.point,
+                "center": cafe.point or delivery.TASHKENT,
+            },
             "payments": cafe.payment_methods(),
             "payment_note": cafe.payment_note,
             "menu": menu_data(cafe),
@@ -120,6 +130,7 @@ def router(web: Web) -> APIRouter:
         result = {
             "phone": c.phone if c else None,
             "address": c.address if c else None,
+            "point": [c.lat, c.lon] if c and c.lat is not None else None,
             "lang": c.lang if c else lang_of(user.language_code),
         }
         if repeat and (found := store.repeat(cafe.id, user.id, repeat)):
@@ -156,11 +167,14 @@ def router(web: Web) -> APIRouter:
         if any(ln is None for ln in lines):
             return refuse("menu_changed")
         address = body.address.strip()
+        point = (body.lat, body.lon) if body.lat is not None and body.lon is not None else None
         if body.method == "delivery":
             if not cafe.delivery_enabled:
                 return refuse("no_delivery")
             if sum(ln.sum for ln in lines) < cafe.delivery_min:
                 return refuse("min_delivery")
+            if delivery.fee(cafe, point) is None:
+                return refuse("far" if point else "point")
             if not address:
                 return refuse("address")
         phone = body.phone.strip()
@@ -179,6 +193,7 @@ def router(web: Web) -> APIRouter:
             comment=body.comment.strip() or None,
             payment_method=body.payment,
             lang=body.lang,
+            point=point,
         )
         await send_to_staff(bot, store, cafe, o)
         await send_to_customer(bot, store, cafe, o)

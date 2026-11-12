@@ -118,3 +118,15 @@ label + .link { margin-top: 8px; font-size: 14px; }
 .toast { position: fixed; left: 16px; right: 16px; bottom: 100px; z-index: 20; padding: 12px 16px; border-radius: 12px;
   background: rgb(20 20 20 / 0.92); color: #fff; text-align: center; }
 .toast[hidden] { display: none; }
+
+/* delivery map: the pin stays in the centre, the guest moves the map under it */
+.mapbox { position: relative; height: 240px; margin: 8px 0 4px; border-radius: var(--radius); overflow: hidden;
+  background: var(--surface); }
+.mapbox .canvas { position: absolute; inset: 0; }
+.mapbox .pin { position: absolute; left: 50%; top: 50%; width: 30px; height: 45px; transform: translate(-50%, -100%);
+  pointer-events: none; filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.35)); }
+.mapbox .pin path { fill: var(--brand); }
+.mapbox .pin circle { fill: var(--on-brand); }
+.mapbox .locate { position: absolute; right: 10px; bottom: 10px; padding: 8px 12px; border-radius: 999px;
+  background: var(--bg); color: var(--text); font-size: 14px; font-weight: 600; box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+.mapbox .maplibregl-ctrl-attrib { font-size: 10px; }

@@ -53,7 +53,15 @@ async def test_page_has_the_menu_and_the_brand(app, store, demo):
     assert "Латте" in names and "Круассан" not in names  # the stop-list is hidden
     latte = next(it for c in data["menu"] for it in c["items"] if it["name"] == "Латте")
     assert [g["name"] for g in latte["groups"]] == ["Размер", "Молоко", "Сироп"]
-    assert data["delivery"] == {"enabled": True, "min": 50000, "fee": 15000} and data["payments"] == ["cash"]
+    assert data["delivery"] == {
+        "enabled": True,
+        "min": 50000,
+        "fee": 15000,
+        "zones": [],
+        "point": None,
+        "center": [41.3111, 69.2797],  # Tashkent while the cafe has no point
+    }
+    assert data["payments"] == ["cash"]
     assert set(data["texts"]) == {"ru", "uz"} and data["texts"]["uz"].keys() == data["texts"]["ru"].keys()
     assert (await client.get("/app/nope")).status_code == 404
 
@@ -96,9 +104,9 @@ async def test_order_from_the_mini_app(app, store, demo):
         assert part in sent
 
     me = (await client.get("/app/demo/me", headers=signed())).json()
-    assert me == {"phone": "+998 90 123 45 67", "address": "Чиланзар 9, кв 12", "lang": "ru"}
+    assert me == {"phone": "+998 90 123 45 67", "address": "Чиланзар 9, кв 12", "point": None, "lang": "ru"}
     other = (await client.get("/app/demo/me", headers=signed(200, lang="uz"))).json()
-    assert other == {"phone": None, "address": None, "lang": "uz"}
+    assert other == {"phone": None, "address": None, "point": None, "lang": "uz"}
 
 
 async def test_checkout_rules(app, store, demo):

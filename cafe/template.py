@@ -24,6 +24,8 @@ class Delivery(BaseModel):
     enabled: bool = False
     min_order: int = 0
     fee: int = 0
+    # price by distance from `location`: [[3, 10000], [7, 15000]] — up to 3 km 10 000, up to 7 km 15 000
+    zones: list[tuple[float, int]] = []
 
 
 class OptionIn(BaseModel):
@@ -57,6 +59,7 @@ class Template(BaseModel):
     timezone: str = "Asia/Tashkent"
     hours: Hours | None = None
     pickup_address: str = ""
+    location: tuple[float, float] | None = None  # [lat, lon] of the cafe: for delivery zones
     delivery: Delivery = Field(default_factory=Delivery)
     payment_note: str = "Оплата наличными или картой при получении"
     brand_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -100,6 +103,9 @@ def import_cafe(store: Store, slug: str, bot_token: str, template: Template, med
         delivery_enabled=t.delivery.enabled,
         delivery_min=t.delivery.min_order,
         delivery_fee=t.delivery.fee,
+        delivery_zones=t.delivery.zones,
+        lat=t.location[0] if t.location else None,
+        lon=t.location[1] if t.location else None,
         payment_note=t.payment_note,
         app_theme=t.app_theme,
         **({"brand_color": t.brand_color.lower()} if t.brand_color else {}),
