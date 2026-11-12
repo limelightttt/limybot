@@ -28,7 +28,7 @@ def web(store, demo, settings, fake):
 
 
 async def login(client, store, cafe_id, user_id=OWNER):
-    r = await client.get(f"/login/{store.create_login(cafe_id, user_id)}")
+    r = await client.post(f"/login/{store.create_login(cafe_id, user_id)}")
     assert r.status_code == 303 and r.headers["location"] == "/orders"
     return r
 
@@ -37,10 +37,10 @@ async def test_login_link_is_one_time(web, store, demo):
     client, _ = web
     assert (await client.get("/orders")).status_code == 401
     token = store.create_login(demo.id, OWNER)
-    await client.get(f"/login/{token}")
+    await client.post(f"/login/{token}")
     assert (await client.get("/orders")).status_code == 200
     client.cookies.clear()
-    r = await client.get(f"/login/{token}")
+    r = await client.post(f"/login/{token}")
     assert r.status_code == 401 and "/admin" in r.text
     await login(client, store, demo.id)
     await client.post("/logout")
@@ -255,5 +255,18 @@ async def test_admin_sees_only_own_cafe(web, store, demo):
     await client.post(f"/orders/{theirs.id}/status", data={"status": "cancelled"})
     await client.post(f"/orders/{theirs.id}/paid")
     assert store.item(other, tea) and store.order(other, theirs.id).status == "new"
-    r = await client.get(f"/login/{store.create_login(other, OWNER)}")
+    r = await client.post(f"/login/{store.create_login(other, OWNER)}")
     assert r.status_code == 401  # not an admin of the tea house
+
+
+async def test_a_link_preview_does_not_use_up_the_login_link(web, store, demo):
+    """Telegram (and WhatsApp, if the owner forwards the link) fetch it for a preview before the person taps it."""
+    client, _ = web
+    store.join(demo.id, store.new_invite(demo.id), 7, "Owner")
+    token = store.create_login(demo.id, 7)
+    for _ in range(3):  # the preview robot, again and again
+        page = await client.get(f"/login/{token}")
+        assert page.status_code == 200 and 'method="post"' in page.text and "submit()" in page.text
+    r = await client.post(f"/login/{token}")  # the person: the page sends itself
+    assert r.status_code == 303 and r.headers["location"] == "/orders"
+    assert (await client.get(f"/login/{token}")).status_code == 401  # and then it is used up

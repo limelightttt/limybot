@@ -25,6 +25,7 @@ from aiogram.types import (
     ErrorEvent,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LinkPreviewOptions,
     Message,
     ReplyParameters,
     User,
@@ -299,10 +300,12 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
 
     @r.message(Command("admin"), F.chat.type == "private", is_admin)
     async def admin(m: Message, cafe: Cafe):
-        token = store.create_login(cafe.id, m.from_user.id)
+        url = f"{settings.public_url.rstrip('/')}/login/{store.create_login(cafe.id, m.from_user.id)}"
         await m.answer(
-            f"Вход в админку «{cafe.name}». Ссылка одноразовая и действует 15 минут:\n"
-            f"{settings.public_url.rstrip('/')}/login/{token}"
+            f"Вход в админку «{cafe.name}». Кнопка одноразовая и действует 15 минут.\n\n"
+            "Удобнее с компьютера: отправьте /admin в Telegram на компьютере и нажмите кнопку там.",
+            reply_markup=kb([[button("Открыть админку", url=url, style="primary")]]),
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
         )
 
     @r.message(Command("admin"), is_admin)

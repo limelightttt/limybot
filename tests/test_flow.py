@@ -190,8 +190,10 @@ async def test_owner_commands(env, store, demo):
     await feed(message(CUSTOMER, "/admin"))
     assert "для администраторов" in session.texts(CUSTOMER)[-1]  # not an admin: told why, no link
     await feed(message(OWNER, "/admin"))
-    link = session.texts(OWNER)[-1].split()[-1]
-    assert link.startswith("https://admin.example.uz/login/")
+    sent = session.messages(OWNER)[-1]
+    link = sent.reply_markup.inline_keyboard[0][0].url  # a button: Telegram does not preview it
+    assert link.startswith("https://admin.example.uz/login/") and link not in sent.text
+    assert sent.link_preview_options.is_disabled
     await feed(message(OWNER, "/admin", chat=Chat(id=GROUP, type="supergroup")))
     assert "в личные сообщения" in session.texts(GROUP)[-1]  # no login links in front of the whole group
     assert store.consume_login(link.rsplit("/", 1)[1]) == (demo.id, OWNER)

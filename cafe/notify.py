@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import Message
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from . import billing, reports
 from .billing import days, last_order_day
@@ -232,7 +232,12 @@ def build_ops(store: Store, settings: Settings, bot_state: Callable[[int], str])
     @r.message(Command("panel"), is_operator)
     async def panel(m: Message):
         link = f"{settings.public_url.rstrip('/')}/ops/login/{store.create_login(OPS, OPERATOR)}"
-        await m.answer(f"Вход в панель оператора (ссылка одноразовая, 15 минут):\n{link}")
+        await m.answer(
+            "Вход в панель оператора — кнопка одноразовая, 15 минут.",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text="Открыть панель", url=link, style="primary")]]
+            ),
+        )
 
     @r.message(Command("status"), is_operator)
     async def status(m: Message):

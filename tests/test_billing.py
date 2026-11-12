@@ -105,7 +105,7 @@ async def test_service_bot(store, settings):
     await dp.feed_update(bot, message(ME, "/start op-code"))
     assert store.operators() == [(ME, "User42")] and "утренняя сводка" in session.texts(ME)[-1]
     await dp.feed_update(bot, message(ME, "/panel"))
-    link = session.texts(ME)[-1].split("\n")[-1]
+    link = session.messages(ME)[-1].reply_markup.inline_keyboard[0][0].url
     assert link.startswith("https://admin.example.uz/ops/login/")
     assert store.consume_login(link.rsplit("/", 1)[1]) == (OPS, OPERATOR)
     await dp.feed_update(bot, message(ME, "/status"))
@@ -126,7 +126,7 @@ def panel(store, demo, settings, fake):
 
 
 async def ops_login(client, store):
-    await client.get(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
+    await client.post(f"/ops/login/{store.create_login(OPS, OPERATOR)}")
 
 
 async def test_recording_payments(panel, store, demo):
@@ -175,7 +175,7 @@ async def test_operator_settings_and_the_service_bot(panel, store, demo):
     assert "служебный бот" in (await client.get("/ops")).text
     await client.post("/ops/settings", data={"support": "@limy_support", "price": "350000"})
     days_from_today(store, demo.id, 2)
-    await client.get(f"/login/{store.create_login(demo.id, OWNER)}")
+    await client.post(f"/login/{store.create_login(demo.id, OWNER)}")
     banner = (await client.get("/orders")).text
     assert "350 000 сум в месяц" in banner and "@limy_support" in banner
 
