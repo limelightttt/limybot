@@ -35,7 +35,7 @@ from aiogram.types import (
 from . import delivery, i18n
 from .config import Settings
 from .i18n import t
-from .models import PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
+from .models import PAYMENT_METHODS, PAYMENT_STATUSES, ROLES, STATUSES, Cafe, Order, title
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -78,46 +78,88 @@ def customer_lang(store: Store, cafe_id: int, user: User | int) -> str:
 
 
 # --- orders: shared with the web admin and the Mini App ---
-def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
+COURIER_STEPS = {"courier", "delivered"}  # what a courier group may press
+
+
+def role_of(cafe: Cafe, chat_id: int) -> str:
+    """Which card a chat gets: the cafe's groups by role; an admin's private chat sees everything, like the kitchen."""
+    return next((role for role, (column, _) in ROLES.items() if getattr(cafe, column) == chat_id), "staff")
+
+
+def staff_card(cafe: Cafe, o: Order, role: str = "staff") -> tuple[str, InlineKeyboardMarkup | None]:
+    """The order card for a staff chat. The kitchen sees everything; couriers — where to go, whom to call, how much to
+    take and their two buttons; finance — the money and "payment received"."""
     where = f"🛵 Доставка: {o.address}" if o.method == "delivery" else "🏃 Самовывоз"
     if o.point and cafe.point:
         where += f"\n📍 {delivery.km(cafe.point, o.point):.1f} км от вас".replace(".", ",")
-    fee = f"\nДоставка: {cafe.money(o.delivery_fee)}" if o.delivery_fee else ""
+    who = f"👤 {o.customer}, {o.phone}" + (f"\n💬 {o.comment}" if o.comment else "")
     payment = f"{PAYMENT_METHODS[o.payment_method]} · {PAYMENT_STATUSES[o.payment_status]}"
+    map_row = [button("🗺 Открыть на карте", url=delivery.map_link(o.point))] if o.point else []
+    pay = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
+    if role == "courier":
+        collect = (
+            f"💵 Получить с гостя: {cafe.money(o.total)}"
+            if o.payment_method == "cash" and o.payment_status != "paid"
+            else f"✅ Оплачено, с гостя ничего не брать ({cafe.money(o.total)})"
+            if o.payment_status == "paid"
+            else f"💳 Перевод {cafe.money(o.total)} ещё не подтверждён — уточните у кафе"
+        )
+        text = f"🛵 Доставка №{o.number} · {STATUSES[o.status]}\n\n{where}\n{who}\n\n{collect}\n\n{o.lines_text(cafe)}"
+        steps = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in o.next_statuses if s in COURIER_STEPS]
+        return text, kb([steps, map_row])
+    if role == "finance":
+        text = (
+            f"💳 Заказ №{o.number} · {STATUSES[o.status]}\n\nИтого: {cafe.money(o.total)}"
+            + (f" (доставка {cafe.money(o.delivery_fee)})" if o.delivery_fee else "")
+            + f"\n{payment}\n\n{who}"
+        )
+        return text, kb([pay])
+    fee = f"\nДоставка: {cafe.money(o.delivery_fee)}" if o.delivery_fee else ""
     text = (
         f"Заказ №{o.number} · {STATUSES[o.status]}\n\n{o.lines_text(cafe)}{fee}\nИтого: {cafe.money(o.total)}\n"
-        f"💳 {payment}\n\n{where}\n👤 {o.customer}, {o.phone}" + (f"\n💬 {o.comment}" if o.comment else "")
+        f"💳 {payment}\n\n{where}\n{who}"
     )
     actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in o.next_statuses]
-    paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
-    where_to = [button("🗺 Открыть на карте", url=delivery.map_link(o.point))] if o.point else []
-    return text, kb([actions, paid, where_to])
+    if cafe.finance_chat_id:  # transfers are checked by the money people
+        pay = []
+    return text, kb([actions, pay, map_row])
+
+
+async def _post(bot: Bot, store: Store, cafe: Cafe, o: Order, chat: int, role: str) -> None:
+    text, markup = staff_card(cafe, o, role)
+    try:
+        msg = await bot.send_message(chat, text, reply_markup=markup)
+    except (TelegramBadRequest, TelegramForbiddenError) as e:
+        log.warning("%s: cannot deliver order %s to chat %s: %s", cafe.slug, o.number, chat, e)
+        return
+    store.add_staff_message(o.id, chat, msg.message_id)
+    if o.point and role != "finance":  # a real pin under the card: a tap opens it in any map app on the phone
+        with suppress(TelegramBadRequest, TelegramForbiddenError):
+            reply = ReplyParameters(message_id=msg.message_id, allow_sending_without_reply=True)
+            await bot.send_location(chat, *o.point, reply_parameters=reply)
 
 
 async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
-    """To the staff group; until it is set up (/staff), to every admin privately."""
-    text, markup = staff_card(cafe, o)
+    """A new order: to the kitchen group (until there is one, to every admin privately) and, for a card transfer, to
+    the finance group. Couriers get it once it is accepted (change_status)."""
     chats = [cafe.staff_chat_id] if cafe.staff_chat_id else [uid for uid, _ in store.admins(cafe.id)]
     for chat in chats:
-        try:
-            msg = await bot.send_message(chat, text, reply_markup=markup)
-        except (TelegramBadRequest, TelegramForbiddenError) as e:
-            log.warning("%s: cannot deliver order %s to chat %s: %s", cafe.slug, o.number, chat, e)
-            continue
-        store.add_staff_message(o.id, chat, msg.message_id)
-        if o.point:  # a real pin under the card: a tap opens it in any map app on the courier's phone
-            with suppress(TelegramBadRequest, TelegramForbiddenError):
-                reply = ReplyParameters(message_id=msg.message_id, allow_sending_without_reply=True)
-                await bot.send_location(chat, *o.point, reply_parameters=reply)
+        await _post(bot, store, cafe, o, chat, "staff")
+    if cafe.finance_chat_id and o.payment_method == "transfer":
+        await _post(bot, store, cafe, o, cafe.finance_chat_id, "finance")
 
 
-async def refresh_staff(bot: Bot, store: Store, cafe: Cafe, o: Order, note: str | None = None) -> None:
-    """Redraw the order's cards in staff chats. A note goes out as a reply to the card, so staff get a notification."""
-    text, markup = staff_card(cafe, o)
+async def refresh_staff(
+    bot: Bot, store: Store, cafe: Cafe, o: Order, note: str | None = None, note_roles: set[str] | None = None
+) -> None:
+    """Redraw the order's cards in staff chats, each for its role. A note goes out as a reply to the card (to the
+    chats of note_roles, default all), so people get a notification."""
     for chat_id, message_id in store.staff_messages(o.id):
+        role = role_of(cafe, chat_id)
+        text, markup = staff_card(cafe, o, role)
         with suppress(TelegramBadRequest):  # card deleted in the chat
             await bot.edit_message_text(text, chat_id=chat_id, message_id=message_id, reply_markup=markup)
-        if note:
+        if note and (note_roles is None or role in note_roles):
             with suppress(TelegramBadRequest, TelegramForbiddenError):
                 reply = ReplyParameters(message_id=message_id, allow_sending_without_reply=True)
                 await bot.send_message(chat_id, note, reply_parameters=reply)
@@ -139,7 +181,7 @@ def customer_view(cafe: Cafe, o: Order, lang: str) -> tuple[str, InlineKeyboardM
         text += "\n\n" + t(lang, "transfer_claimed")
     elif o.status == "new":
         text += "\n\n" + t(lang, "we_will_write")
-    if o.status == "new":
+    if o.customer_can_cancel:
         rows.append([button(t(lang, "cancel_order"), f"oc:{o.id}", "danger")])
     return text, kb(rows)
 
@@ -147,7 +189,20 @@ def customer_view(cafe: Cafe, o: Order, lang: str) -> tuple[str, InlineKeyboardM
 async def send_to_customer(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
     text, markup = customer_view(cafe, o, customer_lang(store, cafe.id, o.user_id))
     with suppress(TelegramForbiddenError, TelegramBadRequest):  # never started the bot, or blocked it
-        await bot.send_message(o.user_id, text, parse_mode="HTML", reply_markup=markup)
+        msg = await bot.send_message(o.user_id, text, parse_mode="HTML", reply_markup=markup)
+        store.set_customer_message(cafe.id, o.id, msg.message_id)
+
+
+async def refresh_customer(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
+    """Redraw the order message in the guest's chat: the status, and buttons only while they still apply —
+    "Cancel" disappears once the kitchen starts cooking."""
+    if not o.customer_message_id:
+        return
+    text, markup = customer_view(cafe, o, customer_lang(store, cafe.id, o.user_id))
+    with suppress(TelegramForbiddenError, TelegramBadRequest):  # deleted by the guest, or "not modified"
+        await bot.edit_message_text(
+            text, chat_id=o.user_id, message_id=o.customer_message_id, parse_mode="HTML", reply_markup=markup
+        )
 
 
 async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) -> bool:
@@ -156,7 +211,11 @@ async def change_status(bot: Bot, store: Store, cafe: Cafe, o: Order, new: str) 
         return False
     store.set_status(cafe.id, o.id, new)
     o = store.order(cafe.id, o.id)
-    await refresh_staff(bot, store, cafe, o)
+    note = f"✖️ Заказ №{o.number} отменён" if new == "cancelled" else None
+    await refresh_staff(bot, store, cafe, o, note=note, note_roles={"courier", "finance"})
+    await refresh_customer(bot, store, cafe, o)
+    if new == "accepted" and o.method == "delivery" and cafe.courier_chat_id:
+        await _post(bot, store, cafe, o, cafe.courier_chat_id, "courier")
     key = f"status_{new}"  # nothing is sent when the order is handed over: the customer already has it
     if key in i18n.BOT_TEXTS["ru"]:
         lang = customer_lang(store, cafe.id, o.user_id)
@@ -171,6 +230,7 @@ async def mark_paid(bot: Bot, store: Store, cafe: Cafe, order_id: int) -> bool:
         return False
     o = store.order(cafe.id, order_id)
     await refresh_staff(bot, store, cafe, o)
+    await refresh_customer(bot, store, cafe, o)
     lang = customer_lang(store, cafe.id, o.user_id)
     with suppress(TelegramForbiddenError, TelegramBadRequest):
         await bot.send_message(o.user_id, t(lang, "payment_received", number=o.number))
@@ -208,7 +268,7 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             row = []
             if repeat := app_url(settings, cafe, repeat=o.id):
                 row.append(button(t(lang, "repeat", number=o.number), web_app=WebAppInfo(url=repeat)))
-            if o.status == "new":
+            if o.customer_can_cancel:
                 row.append(button(t(lang, "cancel_n", number=o.number), f"oc:{o.id}:list", "danger"))
             rows.append(row)
         return t(lang, "orders_title") + "\n\n" + "\n\n".join(blocks), kb(rows)
@@ -225,7 +285,8 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             return await m.answer(
                 f"Готово, вы администратор «{cafe.name}».\n\n"
                 "Заказы будут приходить вам сюда. Чтобы они шли сотрудникам, добавьте меня в их группу в Telegram — "
-                "дальше я сам буду присылать заказы туда.\n\n"
+                "дальше я сам буду присылать заказы туда. Есть курьеры или бухгалтер — сделайте им отдельные группы "
+                "и тоже добавьте меня: спрошу, для чего группа.\n\n"
                 "/admin — вход в админку: меню, цены, фото, заказы\n"
                 "/stats — заказы за сегодня"
             )
@@ -256,8 +317,12 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         if not store.cancel_by_customer(cafe.id, q.from_user.id, int(match[1])):
             return await q.answer(t(lang, "cancel_no"), show_alert=True)
         o = store.order(cafe.id, int(match[1]))
-        await refresh_staff(bot, store, cafe, o, note=f"❗️ Клиент отменил заказ №{o.number}")
-        await redraw(q, *(orders_view(cafe, q.from_user.id, lang) if match[2] else customer_view(cafe, o, lang)))
+        await refresh_staff(bot, store, cafe, o, note=f"❗️ Гость отменил заказ №{o.number} — не готовьте его")
+        if match[2]:  # from "my orders": that list is redrawn, the order message too
+            await redraw(q, *orders_view(cafe, q.from_user.id, lang))
+            await refresh_customer(bot, store, cafe, o)
+        else:
+            await redraw(q, *customer_view(cafe, o, lang))
         await q.answer(t(lang, "cancelled_ok", number=o.number))
 
     @r.callback_query(F.data.regexp(r"^paid:(\d+)$").as_("match"))
@@ -266,7 +331,14 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         if not store.claim_transfer(cafe.id, q.from_user.id, int(match[1])):
             return await q.answer(t(lang, "claim_no"), show_alert=True)
         o = store.order(cafe.id, int(match[1]))
-        await refresh_staff(bot, store, cafe, o, note=f"💳 Клиент сообщил о переводе по заказу №{o.number} — проверьте")
+        await refresh_staff(
+            bot,
+            store,
+            cafe,
+            o,
+            note=f"💳 Гость сообщил о переводе {cafe.money(o.total)} по заказу №{o.number} — проверьте поступление",
+            note_roles={"finance"} if cafe.finance_chat_id else {"staff"},
+        )
         await redraw(q, *customer_view(cafe, o, lang))
         await q.answer(t(lang, "claim_ok"))
 
@@ -275,11 +347,19 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
         await m.answer(t(customer_lang(store, cafe.id, m.from_user), "privacy", name=cafe.name))
 
     # --- staff ---
+    def chat_role(cafe: Cafe, chat_id: int) -> str | None:
+        return next((role for role, (column, _) in ROLES.items() if getattr(cafe, column) == chat_id), None)
+
     async def is_staff(q: CallbackQuery, cafe: Cafe) -> bool:  # async: aiogram runs sync filters in a thread
-        """Staff buttons work in the staff group and for admins. Telegram does not check that callback data came from
-        a real button, so a forged st:/pay: from a customer's chat must do nothing."""
-        in_staff_chat = cafe.staff_chat_id is not None and q.message.chat.id == cafe.staff_chat_id
-        return in_staff_chat or store.is_admin(cafe.id, q.from_user.id)
+        """Staff buttons work in the cafe's groups and for admins. Telegram does not check that callback data came
+        from a real button, so a forged st:/pay: from a customer's chat must do nothing; each group may press only
+        its own buttons (couriers: picked up / delivered, finance: payment received)."""
+        if store.is_admin(cafe.id, q.from_user.id):
+            return True
+        role = chat_role(cafe, q.message.chat.id)
+        if q.data.startswith("pay:"):
+            return role == "finance" or (role == "staff" and not cafe.finance_chat_id)
+        return role == "staff" or (role == "courier" and q.data.rsplit(":", 1)[1] in COURIER_STEPS)
 
     @r.callback_query(F.data.regexp(r"^st:(\d+):([a-z]+)$").as_("match"), is_staff)
     async def status(q: CallbackQuery, match, bot: Bot, cafe: Cafe):
@@ -312,23 +392,48 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
     async def admin_in_group(m: Message):
         await m.reply("Ссылку на админку в группе не показываю — напишите /admin мне в личные сообщения.")
 
-    @r.message(Command("staff"), is_admin)
-    async def staff(m: Message, cafe: Cafe):
-        if m.chat.type == "private":
-            store.set_staff_chat(cafe.id, None)
-            return await m.answer(
-                "Заказы снова приходят администраторам в личные сообщения.\n"
-                "Чтобы они шли сотрудникам, добавьте меня в их группу."
-            )
-        store.set_staff_chat(cafe.id, m.chat.id)
-        await m.answer(f"Готово: заказы «{cafe.name}» приходят в эту группу.")
+    GROUP_COMMANDS = {"staff": "staff", "couriers": "courier", "finance": "finance"}
+    BOUND = {
+        "staff": "Готово: сюда приходят все заказы «{name}» — с кнопками «Принять», «Готовится» и так далее.",
+        "courier": "Готово: это группа курьеров «{name}». Сюда приходят принятые заказы на доставку — адрес, точка на "
+        "карте, телефон, сколько взять с гостя — и кнопки «Передан курьеру» и «Доставлен».",
+        "finance": "Готово: это группа финансов «{name}». Сюда приходят заказы с переводом на карту — проверьте "
+        "поступление и нажмите «Оплата получена», — и отмены.",
+    }
+    UNBOUND = {
+        "staff": "Заказы снова приходят администраторам в личные сообщения.\n"
+        "Чтобы они шли сотрудникам, добавьте меня в их группу.",
+        "courier": "Группа курьеров отключена: заказы на доставку видны только на кухне.",
+        "finance": "Группа финансов отключена: переводы подтверждают на кухне.",
+    }
+
+    def role_buttons(current: str | None) -> InlineKeyboardMarkup | None:
+        return kb([[button(label, f"role:{role}")] for role, (_, label) in ROLES.items() if role != current])
+
+    @r.message(Command(*GROUP_COMMANDS), is_admin)
+    async def bind_group(m: Message, command: CommandObject, cafe: Cafe):
+        role = GROUP_COMMANDS[command.command]
+        if m.chat.type == "private":  # the command in private switches that group off
+            store.set_staff_chat(cafe.id, None, role)
+            return await m.answer(UNBOUND[role])
+        store.set_staff_chat(cafe.id, m.chat.id, role)
+        await m.answer(BOUND[role].format(name=cafe.name))
+
+    @r.callback_query(F.data.regexp(r"^role:(staff|courier|finance)$").as_("match"))
+    async def pick_role(q: CallbackQuery, match, cafe: Cafe):
+        if not store.is_admin(cafe.id, q.from_user.id):
+            return await q.answer("Выбрать может только администратор заведения", show_alert=True)
+        store.set_staff_chat(cafe.id, q.message.chat.id, match[1])
+        with suppress(TelegramBadRequest):
+            await q.message.edit_text(BOUND[match[1]].format(name=cafe.name), reply_markup=role_buttons(match[1]))
+        await q.answer("Сохранено")
 
     @r.message(Command("stats"), is_admin)
     async def stats(m: Message, cafe: Cafe):
         n, total = store.stats(cafe.id, cafe.today())
         await m.answer(f"Сегодня: {n} заказов на {cafe.money(total)}")
 
-    @r.message(Command("admin", "staff", "stats"))
+    @r.message(Command("admin", "staff", "couriers", "finance", "stats"))
     async def not_admin(m: Message, cafe: Cafe):
         """Silence looks like a broken bot: say why the command does nothing."""
         if m.sender_chat:  # an anonymous group admin: Telegram hides who it is
@@ -341,41 +446,49 @@ def build(store: Store, cafe_id: int, settings: Settings) -> Dispatcher:
             "которую вам прислали при подключении, — после этого я буду вас узнавать."
         )
 
-    # --- the staff group: adding the bot is all it takes ---
+    # --- staff groups: adding the bot is all it takes ---
     @r.my_chat_member(ChatMemberUpdatedFilter(JOIN_TRANSITION), F.chat.type.in_({"group", "supergroup"}))
     async def joined_group(event: ChatMemberUpdated, bot: Bot, cafe: Cafe):
-        if store.is_admin(cafe.id, event.from_user.id):
+        markup = None
+        if not store.is_admin(cafe.id, event.from_user.id):
+            text = (
+                f"Здравствуйте! Я бот заказов «{cafe.name}». Чтобы заказы приходили в эту группу, администратор "
+                "заведения должен отправить здесь /staff (кухня), /couriers (курьеры) или /finance (финансы)."
+            )
+        elif not cafe.staff_chat_id:  # the first group is the kitchen: the common case needs no choice
             store.set_staff_chat(cafe.id, event.chat.id)
             text = (
-                f"Здравствуйте! Теперь заказы «{cafe.name}» приходят сюда — с кнопками «Принять», «Готов» и так далее.\n"
-                "Чтобы вернуть заказы в личные сообщения, удалите меня из группы."
+                BOUND["staff"].format(name=cafe.name) + "\n\nЕсли это группа курьеров или финансов — нажмите кнопку "
+                "ниже. Чтобы вернуть заказы в личные сообщения, удалите меня из группы."
             )
+            markup = role_buttons("staff")
         else:
-            text = (
-                f"Здравствуйте! Я бот заказов «{cafe.name}». Чтобы заказы приходили в эту группу, "
-                "администратор заведения должен отправить здесь /staff."
-            )
+            text = f"Здравствуйте! Для чего эта группа «{cafe.name}»?"
+            markup = role_buttons(None)
         with suppress(TelegramBadRequest, TelegramForbiddenError):  # a group where the bot may not write
-            await bot.send_message(event.chat.id, text)
+            await bot.send_message(event.chat.id, text, reply_markup=markup)
 
     @r.my_chat_member(ChatMemberUpdatedFilter(LEAVE_TRANSITION))
     async def left_group(event: ChatMemberUpdated, bot: Bot, cafe: Cafe):
-        if event.chat.id != cafe.staff_chat_id:
+        role = next((role for role, (column, _) in ROLES.items() if getattr(cafe, column) == event.chat.id), None)
+        if not role:
             return
-        store.set_staff_chat(cafe.id, None)
+        store.set_staff_chat(cafe.id, None, role)
+        what = {
+            "staff": "заказы теперь приходят вам в личные сообщения",
+            "courier": "группы курьеров больше нет",
+            "finance": "группы финансов больше нет — переводы подтверждают на кухне",
+        }[role]
         for uid, _ in store.admins(cafe.id):
             with suppress(TelegramBadRequest, TelegramForbiddenError):
                 await bot.send_message(
-                    uid,
-                    f"Меня убрали из группы «{event.chat.title}» — заказы теперь приходят вам в личные сообщения. "
-                    "Чтобы вернуть их сотрудникам, добавьте меня в их группу.",
+                    uid, f"Меня убрали из группы «{event.chat.title}» — {what}. Вернуть — добавьте меня в группу снова."
                 )
 
     @r.message(F.migrate_to_chat_id)
     async def group_upgraded(m: Message, cafe: Cafe):
         """A group that becomes a supergroup gets a new id; the old one stops receiving messages."""
-        if m.chat.id == cafe.staff_chat_id:
-            store.set_staff_chat(cafe.id, m.migrate_to_chat_id)
+        store.replace_chat(cafe.id, m.chat.id, m.migrate_to_chat_id)
 
     # anything else typed in private (old keyboards, "hi") gets the greeting with the menu button
     @r.message(F.chat.type == "private", F.text)

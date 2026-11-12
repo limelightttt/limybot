@@ -7,11 +7,11 @@ import time
 from typing import Annotated, Literal
 
 from aiogram.utils.web_app import WebAppUser, safe_parse_webapp_init_data
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .. import delivery
+from .. import delivery, geocode
 from ..bot import send_to_customer, send_to_staff
 from ..i18n import APP_TEXTS, lang_of
 from ..media import thumb
@@ -142,6 +142,16 @@ def router(web: Web) -> APIRouter:
                 "missing": missing,
             }
         return result
+
+    @r.get("/{slug}/where")
+    async def where(
+        who: Customer,
+        lat: Annotated[float, Query(ge=-90, le=90)],
+        lon: Annotated[float, Query(ge=-180, le=180)],
+        lang: Literal["ru", "uz"] = "ru",
+    ):
+        """A suggestion for the address line under the pin (geocode.py); null if none — the guest types it."""
+        return {"address": await geocode.address(lat, lon, lang)}
 
     @r.post("/{slug}/lang")
     async def set_lang(who: Customer, body: LangIn):

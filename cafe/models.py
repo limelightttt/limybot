@@ -22,6 +22,14 @@ FLOW = {
     "delivery": ["new", "accepted", "cooking", "courier", "delivered"],
 }
 STAFF_CANCELLABLE = {"new", "accepted", "cooking"}  # nothing is cancelled once it is ready or on the way
+CUSTOMER_CANCELLABLE = {"new", "accepted"}
+# staff groups by role: (cafes column, what the group is for). A group added by an admin becomes the kitchen if there
+# is none yet; otherwise the bot asks which one it is.
+ROLES = {
+    "staff": ("staff_chat_id", "Кухня — все заказы"),
+    "courier": ("courier_chat_id", "Курьеры — доставка"),
+    "finance": ("finance_chat_id", "Финансы — переводы и отмены"),
+}  # the guest can change their mind until the kitchen starts cooking
 ACTIVE = sorted({s for flow in FLOW.values() for s in flow[:-1]})
 HANDED_OVER = {flow[-1] for flow in FLOW.values()}
 
@@ -60,7 +68,7 @@ class Cafe:
     delivery_min: int
     delivery_fee: int
     payment_note: str
-    staff_chat_id: int | None
+    staff_chat_id: int | None  # the kitchen: every order
     invite_code: str | None
     brand_color: str
     logo: str | None
@@ -70,6 +78,8 @@ class Cafe:
     paid_until: date | None  # the last paid day; None — no limit (the operator's own or a demo). See billing.py
     enabled: bool
     app_theme: str  # one of APP_THEMES
+    courier_chat_id: int | None = None  # couriers: delivery orders once accepted, only courier buttons
+    finance_chat_id: int | None = None  # money: card transfers to confirm, cancellations
     lat: float | None = None  # the cafe on the map: distances for delivery zones (delivery.py)
     lon: float | None = None
     delivery_zones: list[tuple[float, int]] = field(default_factory=list)  # (up to km, price), nearest first
@@ -217,10 +227,15 @@ class Order:
     created_at: datetime
     lat: float | None = None  # the delivery pin from the Mini App
     lon: float | None = None
+    customer_message_id: int | None = None  # the order message in the guest's chat, redrawn on every change
 
     @property
     def point(self) -> tuple[float, float] | None:
         return (self.lat, self.lon) if self.lat is not None and self.lon is not None else None
+
+    @property
+    def customer_can_cancel(self) -> bool:
+        return self.status in CUSTOMER_CANCELLABLE
 
     @property
     def next_statuses(self) -> list[str]:

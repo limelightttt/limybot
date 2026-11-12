@@ -41,12 +41,13 @@
 
 <section class="card">
   <h2>Куда приходят заказы</h2>
-  {% if cafe.staff_chat_id %}
-  <p>✅ В группу персонала.</p>
-  {% else %}
-  <p>Пока — администраторам в личные сообщения. Чтобы заказы шли сотрудникам, владелец добавляет бота в их группу в Telegram
-    — бот сам начнёт присылать туда заказы.</p>
-  {% endif %}
+  <ul class="groups">
+    <li>{% if cafe.staff_chat_id %}✅{% else %}▫️{% endif %} <b>Кухня</b> — {% if cafe.staff_chat_id %}группа подключена{% else %}пока администраторам в личные сообщения{% endif %}</li>
+    <li>{% if cafe.courier_chat_id %}✅{% else %}▫️{% endif %} <b>Курьеры</b> — {% if cafe.courier_chat_id %}группа подключена{% else %}нет, доставку ведёт кухня{% endif %}</li>
+    <li>{% if cafe.finance_chat_id %}✅{% else %}▫️{% endif %} <b>Финансы</b> — {% if cafe.finance_chat_id %}группа подключена{% else %}нет, переводы подтверждает кухня{% endif %}</li>
+  </ul>
+  <p class="muted">Владелец добавляет бота в группу в Telegram: первая станет кухней, про следующие бот спросит, для чего они.
+    Или администратор пишет в группе <code>/staff</code>, <code>/couriers</code> или <code>/finance</code>.</p>
 </section>
 
 <section class="card" id="subscription">

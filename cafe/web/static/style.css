@@ -150,3 +150,4 @@ table.report td:last-child { text-align: right; white-space: nowrap; padding-lef
 table.report .warn-row td { color: #8a5a00; font-weight: 600; }
 .days .bar-cell { width: 40%; padding: 0 8px; }
 .days .bar-cell span { display: block; height: 8px; border-radius: 4px; background: var(--accent); min-width: 2px; }
+.groups { list-style: none; padding: 0; margin: 0 0 8px; display: grid; gap: 6px; }

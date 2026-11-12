@@ -110,7 +110,7 @@ def test_status_flows_by_how_the_order_is_received(store, demo):
     assert store.orders(demo.id, active_only=True) == []
 
 
-def test_customer_cancels_only_a_new_own_order(store, demo):
+def test_customer_cancels_own_order_until_cooking(store, demo):
     o = order(store, demo, 1)
     assert not store.cancel_by_customer(demo.id, 2, o.id)  # somebody else's order
     assert store.cancel_by_customer(demo.id, 1, o.id)
@@ -118,7 +118,10 @@ def test_customer_cancels_only_a_new_own_order(store, demo):
     assert not store.cancel_by_customer(demo.id, 1, o.id)
     accepted = order(store, demo, 1)
     store.set_status(demo.id, accepted.id, "accepted")
-    assert not store.cancel_by_customer(demo.id, 1, accepted.id)  # staff were first
+    assert store.cancel_by_customer(demo.id, 1, accepted.id)  # accepted, not cooking yet: still the guest's call
+    cooking = order(store, demo, 1)
+    store.set_status(demo.id, cooking.id, "cooking")
+    assert not store.cancel_by_customer(demo.id, 1, cooking.id)  # the kitchen started
 
 
 def test_card_transfer_payment(store, demo):
