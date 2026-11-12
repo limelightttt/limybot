@@ -192,3 +192,13 @@ async def test_operator_settings_and_the_service_bot(panel, store, demo):
     assert store.operators() == []
     await client.post("/ops/settings/bot", data={"token": ""})
     assert store.meta("ops_bot_token") is None
+
+
+async def test_the_service_bot_cannot_be_a_cafe_bot(panel, store, demo):
+    client, _, _ = panel
+    await ops_login(client, store)
+    await client.post("/ops/settings/bot", data={"token": "9:ops"})
+    r = await client.post("/ops/new", data={"token": "9:ops"})
+    assert "Это ваш служебный бот" in r.text and not store.cafe_by_token("9:ops")
+    await client.post(f"/ops/cafes/{demo.id}/token", data={"token": "9:ops"})
+    assert store.cafe(demo.id).bot_token == "1:demo"
