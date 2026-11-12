@@ -70,6 +70,13 @@ class Cafe:
     paid_until: date | None  # the last paid day; None — no limit (the operator's own or a demo). See billing.py
     enabled: bool
     app_theme: str  # one of APP_THEMES
+    lat: float | None = None  # the cafe on the map: distances for delivery zones (delivery.py)
+    lon: float | None = None
+    delivery_zones: list[tuple[float, int]] = field(default_factory=list)  # (up to km, price), nearest first
+
+    @property
+    def point(self) -> tuple[float, float] | None:
+        return (self.lat, self.lon) if self.lat is not None and self.lon is not None else None
 
     def now(self) -> datetime:
         return datetime.now(ZoneInfo(self.timezone))
@@ -120,6 +127,8 @@ class Customer:
     phone: str | None
     address: str | None
     lang: str
+    lat: float | None = None  # the last delivery pin
+    lon: float | None = None
 
 
 @dataclass
@@ -206,6 +215,12 @@ class Order:
     payment_method: str
     payment_status: str
     created_at: datetime
+    lat: float | None = None  # the delivery pin from the Mini App
+    lon: float | None = None
+
+    @property
+    def point(self) -> tuple[float, float] | None:
+        return (self.lat, self.lon) if self.lat is not None and self.lon is not None else None
 
     @property
     def next_statuses(self) -> list[str]:

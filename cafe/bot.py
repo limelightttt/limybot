@@ -31,7 +31,7 @@ from aiogram.types import (
     WebAppInfo,
 )
 
-from . import i18n
+from . import delivery, i18n
 from .config import Settings
 from .i18n import t
 from .models import PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe, Order, title
@@ -79,6 +79,8 @@ def customer_lang(store: Store, cafe_id: int, user: User | int) -> str:
 # --- orders: shared with the web admin and the Mini App ---
 def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
     where = f"🛵 Доставка: {o.address}" if o.method == "delivery" else "🏃 Самовывоз"
+    if o.point and cafe.point:
+        where += f"\n📍 {delivery.km(cafe.point, o.point):.1f} км от вас".replace(".", ",")
     fee = f"\nДоставка: {cafe.money(o.delivery_fee)}" if o.delivery_fee else ""
     payment = f"{PAYMENT_METHODS[o.payment_method]} · {PAYMENT_STATUSES[o.payment_status]}"
     text = (
@@ -87,7 +89,8 @@ def staff_card(cafe: Cafe, o: Order) -> tuple[str, InlineKeyboardMarkup | None]:
     )
     actions = [button(BUTTON[s], f"st:{o.id}:{s}", STYLE.get(s)) for s in o.next_statuses]
     paid = [button("💳 Оплата получена", f"pay:{o.id}", "success")] if o.awaits_transfer else []
-    return text, kb([actions, paid])
+    where_to = [button("🗺 Открыть на карте", url=delivery.map_link(o.point))] if o.point else []
+    return text, kb([actions, paid, where_to])
 
 
 async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
@@ -101,6 +104,10 @@ async def send_to_staff(bot: Bot, store: Store, cafe: Cafe, o: Order) -> None:
             log.warning("%s: cannot deliver order %s to chat %s: %s", cafe.slug, o.number, chat, e)
             continue
         store.add_staff_message(o.id, chat, msg.message_id)
+        if o.point:  # a real pin under the card: a tap opens it in any map app on the courier's phone
+            with suppress(TelegramBadRequest, TelegramForbiddenError):
+                reply = ReplyParameters(message_id=msg.message_id, allow_sending_without_reply=True)
+                await bot.send_location(chat, *o.point, reply_parameters=reply)
 
 
 async def refresh_staff(bot: Bot, store: Store, cafe: Cafe, o: Order, note: str | None = None) -> None:

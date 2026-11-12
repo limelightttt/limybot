@@ -7,6 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from PIL import Image, UnidentifiedImageError
 
+from ..delivery import parse_zones
 from ..media import drop_photo, save_photo
 from ..models import APP_THEMES, Cafe
 from .common import Web, back
@@ -47,6 +48,10 @@ def router(web: Web) -> APIRouter:
         delivery_fee: Annotated[int, Form(ge=0)] = 0,
         card_number: Annotated[str, Form()] = "",
         card_holder: Annotated[str, Form()] = "",
+        lat: Annotated[str, Form()] = "",
+        lon: Annotated[str, Form()] = "",
+        zone_km: Annotated[list[str] | None, Form()] = None,
+        zone_fee: Annotated[list[str] | None, Form()] = None,
     ):
         cafe, _ = admin
         try:
@@ -56,6 +61,15 @@ def router(web: Web) -> APIRouter:
         card = card_digits(card_number)
         if card is None:
             return back("/settings#payment", "Номер карты — 16 цифр")
+        zones = parse_zones(list(zip(zone_km or [], zone_fee or [], strict=False)))
+        if zones is None:
+            return back("/settings#where", "Зоны доставки: в каждой строке — километры и цена, например 3 и 10000")
+        try:
+            point = (float(lat), float(lon)) if lat and lon else (None, None)
+        except ValueError:
+            point = (None, None)
+        if not (point[0] is None or (-90 <= point[0] <= 90 and -180 <= point[1] <= 180)):
+            point = (None, None)
         store.update_cafe(
             cafe.id,
             name=name.strip(),
@@ -69,7 +83,12 @@ def router(web: Web) -> APIRouter:
             delivery_fee=delivery_fee,
             card_number=card,
             card_holder=card_holder.strip(),
+            lat=point[0],
+            lon=point[1],
+            delivery_zones=zones,
         )
+        if zones and point[0] is None:
+            return back("/settings#where", "Сохранено. Чтобы цена зависела от расстояния, отметьте на карте, где вы")
         return back("/settings", "Настройки сохранены")
 
     @r.post("/settings/brand")

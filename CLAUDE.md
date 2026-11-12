@@ -23,6 +23,8 @@ cafe/
   i18n.py       тексты гостю ru/uz: BOT_TEXTS (бот), APP_TEXTS (Mini App), STATUS, order_text
   media.py      фото: JPEG ≤1280px + превью ≤480px (thumb), удаление, превью для старых фото
   backup.py     data/backups/limybot-<дата>.zip (база + фото), хранит KEEP=14
+  delivery.py   доставка по карте: km() (по прямой), fee(cafe, point) — цена по зонам или одна цена, map_link (Яндекс),
+                parse_zones (форма админки)
   billing.py    подписка: цена, пробный период, отсрочка (GRACE_DAYS), extend() — продление от старой даты,
                 state() — ok/soon/grace/off/paused/unlimited; Payment
   notify.py     напоминания владельцам в их бот (за 3 дня, за 1, отсрочка, отключено, «оплата получена»),
@@ -78,6 +80,14 @@ Mac/Linux: `install.sh` (curl | sh) ставит uv и cloudflared, качает
   Корзина живёт на телефоне (localStorage), сервер перепроверяет каждую строку через `Store.lines`.
   Ошибки заказа — 409 `{"error": код}`, текст — `APP_TEXTS[lang]["error_" + код]`. Telegram открывает Mini App
   только по https: без https в `PUBLIC_URL` бот работает, но без кнопки меню.
+- **Доставка по карте:** у кафе точка (`lat`/`lon`) и зоны `delivery_zones` [(до км, цена)], всегда по
+  возрастанию. Есть и точка, и зоны → гость обязан поставить булавку (ошибки `point`/`far`), цену считает сервер
+  (`delivery.fee`, та же логика в `app.js quote()`); иначе — `delivery_fee` везде, булавка необязательна. Карта —
+  MapLibre 4.7.1 из `static/vendor` (BSD, свой файл, не CDN) + тайлы OpenFreeMap (бесплатно, без ключей; бесплатный
+  Яндекс запрещает перепродажу). Булавка в центре, двигается карта; «Я здесь» — `Telegram.WebApp.LocationManager`
+  (8.0+), иначе `navigator.geolocation`. Карта создаётся один раз и переносится между перерисовками корзины
+  (`mapElement()`), при движении меняются только цена и кнопка (`updateQuote()`). Сотрудникам — «📍 N км от вас»,
+  кнопка «Открыть на карте» (Яндекс) и `send_location` ответом на карточку.
 - **Модификаторы:** группа `multiple=False` — ровно один вариант (первый по умолчанию), `True` — любое число.
   Валидация выбора — `Store.pick` (та же логика продублирована в `app.js` для UI).
 - **Заказ** хранит снимок строк (JSON: item_id, option_ids, name, options, qty, unit) — правки меню не меняют старые

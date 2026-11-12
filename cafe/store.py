@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, time
 from pathlib import Path
 
 from .billing import Payment, extend
+from .delivery import fee as delivery_fee
 from .models import ACTIVE, HANDED_OVER, Cafe, CartLine, Category, Customer, Item, ModifierGroup, Option, Order
 
 # The current shape of the database: a new database is created from it and marked as up to date.
@@ -21,7 +22,8 @@ create table cafes (
   payment_note text not null default 'Оплата наличными или картой при получении',
   staff_chat_id integer, invite_code text, brand_color text not null default '#8b5e3c', logo text, cover text,
   card_number text not null default '', card_holder text not null default '', paid_until text,
-  enabled integer not null default 1, app_theme text not null default 'auto'
+  enabled integer not null default 1, app_theme text not null default 'auto', lat real, lon real,
+  delivery_zones text not null default '[]'
 );
 create table admins (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null,
@@ -55,7 +57,7 @@ create table orders (
   comment text, lines text not null, subtotal integer not null, delivery_fee integer not null,
   total integer not null, status text not null default 'new',
   payment_method text not null default 'cash', payment_status text not null default 'pending',
-  created_at text not null, unique (cafe_id, number)
+  created_at text not null, lat real, lon real, unique (cafe_id, number)
 );
 create table staff_messages (
   order_id integer not null references orders on delete cascade, chat_id integer not null,
@@ -67,7 +69,7 @@ create table sessions (token text primary key, cafe_id integer not null,
   user_id integer not null, expires integer not null);
 create table customers (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null, phone text,
-  address text, lang text not null default 'ru', primary key (cafe_id, user_id)
+  address text, lang text not null default 'ru', lat real, lon real, primary key (cafe_id, user_id)
 );
 create table payments (
   id integer primary key, cafe_id integer not null references cafes on delete cascade, amount integer not null,
@@ -119,6 +121,16 @@ MIGRATIONS = [
     create table operators (chat_id integer primary key, name text not null default '');
     create table meta (key text primary key, value text not null);
     """,
+    # 4: delivery by the map: the cafe's point and price zones, the guest's pin on orders and in the profile
+    """
+    alter table cafes add column lat real;
+    alter table cafes add column lon real;
+    alter table cafes add column delivery_zones text not null default '[]';
+    alter table orders add column lat real;
+    alter table orders add column lon real;
+    alter table customers add column lat real;
+    alter table customers add column lon real;
+    """,
 ]
 
 CAFE_FIELDS = {
@@ -137,6 +149,9 @@ CAFE_FIELDS = {
     "app_theme",
     "card_number",
     "card_holder",
+    "lat",
+    "lon",
+    "delivery_zones",
 }
 CAFE_IMAGES = {"logo", "cover"}
 # The operator (who runs this installation) logs in to /ops with a link from the terminal; their sessions and login
@@ -190,7 +205,11 @@ class Store:
     def _cafe_values(self, fields: dict) -> dict:
         if unknown := set(fields) - CAFE_FIELDS:
             raise ValueError(f"unknown cafe fields: {unknown}")
-        return {k: v.strftime("%H:%M") if isinstance(v, time) else v for k, v in fields.items()}
+        values = {k: v.strftime("%H:%M") if isinstance(v, time) else v for k, v in fields.items()}
+        if "delivery_zones" in values:
+            zones = sorted((float(k), int(p)) for k, p in values["delivery_zones"])  # nearest first: delivery.fee
+            values["delivery_zones"] = json.dumps(zones)
+        return values
 
     def _cafe(self, row: sqlite3.Row | None) -> Cafe | None:
         if not row:
@@ -202,6 +221,7 @@ class Store:
             delivery_enabled=bool(d["delivery_enabled"]),
             paid_until=date.fromisoformat(d["paid_until"]) if d["paid_until"] else None,
             enabled=bool(d["enabled"]),
+            delivery_zones=[(float(k), int(p)) for k, p in json.loads(d["delivery_zones"])],
         )
         return Cafe(**d)
 
@@ -670,7 +690,8 @@ class Store:
     # --- customers ---
     def customer(self, cafe_id: int, user_id: int) -> Customer | None:
         row = self.db.execute(
-            "select phone, address, lang from customers where cafe_id = ? and user_id = ?", (cafe_id, user_id)
+            "select phone, address, lang, lat, lon from customers where cafe_id = ? and user_id = ?",
+            (cafe_id, user_id),
         ).fetchone()
         return Customer(*row) if row else None
 
@@ -696,8 +717,10 @@ class Store:
         comment: str | None,
         payment_method: str,
         lang: str,
+        point: tuple[float, float] | None = None,
     ) -> Order:
-        """Saves the order and remembers the phone, the delivery address and the language for next time."""
+        """Saves the order and remembers the phone, the delivery address and pin, and the language for next time.
+        The delivery price comes from delivery.fee — the caller has checked that there is one for this point."""
         snapshot = [
             {
                 "item_id": ln.item.id,
@@ -711,15 +734,18 @@ class Store:
         ]
         subtotal = sum(ln.sum for ln in lines)
         delivery = method == "delivery"
-        fee = cafe.delivery_fee if delivery else 0
+        fee = delivery_fee(cafe, point) if delivery else 0
+        if fee is None:
+            raise ValueError("no delivery to this point")
+        lat, lon = point if delivery and point else (None, None)
         with self.db:
             number = self.db.execute(
                 "select coalesce(max(number), 0) + 1 from orders where cafe_id = ?", (cafe.id,)
             ).fetchone()[0]
             cur = self.db.execute(
                 "insert into orders (cafe_id, number, user_id, customer, phone, method, address, comment, lines,"
-                " subtotal, delivery_fee, total, payment_method, created_at)"
-                " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " subtotal, delivery_fee, total, payment_method, created_at, lat, lon)"
+                " values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     cafe.id,
                     number,
@@ -735,13 +761,16 @@ class Store:
                     subtotal + fee,
                     payment_method,
                     datetime.now(UTC).isoformat(),
+                    lat,
+                    lon,
                 ),
             )
             self.db.execute(
-                "insert into customers (cafe_id, user_id, phone, address, lang) values (?, ?, ?, ?, ?)"
+                "insert into customers (cafe_id, user_id, phone, address, lang, lat, lon) values (?, ?, ?, ?, ?, ?, ?)"
                 " on conflict (cafe_id, user_id) do update set phone = excluded.phone,"
-                " address = coalesce(excluded.address, address), lang = excluded.lang",
-                (cafe.id, user_id, phone, address if delivery else None, lang),
+                " address = coalesce(excluded.address, address), lang = excluded.lang,"
+                " lat = coalesce(excluded.lat, lat), lon = coalesce(excluded.lon, lon)",
+                (cafe.id, user_id, phone, address if delivery else None, lang, lat, lon),
             )
         return self.order(cafe.id, cur.lastrowid)
 

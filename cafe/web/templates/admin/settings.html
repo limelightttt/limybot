@@ -1,4 +1,8 @@
 {% extends "admin/base.html" %}
+{% block head %}
+<link rel="stylesheet" href="/static/vendor/maplibre-gl.css">
+<script src="/static/vendor/maplibre-gl.js" defer></script>
+{% endblock %}
 {% block content %}
 <section class="card">
   <form method="post" action="/settings" class="stack">
@@ -19,6 +23,27 @@
       <label class="check"><input type="checkbox" name="delivery_enabled" value="1" {% if cafe.delivery_enabled %}checked{% endif %}> Есть доставка</label>
       <label>Минимальный заказ, {{ cafe.currency }} <input type="number" name="delivery_min" min="0" step="1000" inputmode="numeric" value="{{ cafe.delivery_min }}"></label>
       <label>Стоимость доставки, {{ cafe.currency }} <input type="number" name="delivery_fee" min="0" step="1000" inputmode="numeric" value="{{ cafe.delivery_fee }}"></label>
+      <div class="field" id="where">
+        <span>Где вы на карте — передвиньте карту, чтобы булавка встала на ваш вход</span>
+        <div class="mapbox" id="cafe-map" data-lat="{{ cafe.lat or '' }}" data-lon="{{ cafe.lon or '' }}">
+          <svg class="pin" viewBox="0 0 24 36" aria-hidden="true"><path d="M12 0C5.4 0 0 5.3 0 11.9 0 20.8 12 36 12 36s12-15.2 12-24.1C24 5.3 18.6 0 12 0z"/><circle cx="12" cy="12" r="4.5"/></svg>
+        </div>
+        <input type="hidden" name="lat" value="{{ cafe.lat or '' }}"><input type="hidden" name="lon" value="{{ cafe.lon or '' }}">
+        <small class="muted" id="where-note">{% if cafe.point %}Точка сохранена.{% else %}Точка ещё не отмечена.{% endif %}</small>
+      </div>
+      <div class="field">
+        <span>Цена по расстоянию (необязательно)</span>
+        {% for i in range(5) %}{% set zone = cafe.delivery_zones[i] if i < cafe.delivery_zones|length else None %}
+        <div class="inline zone">
+          <span>до</span><input name="zone_km" inputmode="decimal" value="{{ ('%g' % zone[0]) if zone else '' }}" aria-label="километров">
+          <span>км —</span><input name="zone_fee" type="number" min="0" step="1000" inputmode="numeric" value="{{ zone[1] if zone else '' }}" aria-label="цена">
+          <span>{{ cafe.currency }}</span>
+        </div>
+        {% endfor %}
+        <small class="muted">Например: до 3 км — 10 000, до 7 км — 15 000. Дальше последней зоны бот не доставляет. Расстояние
+          считается по прямой от вашей точки, по дорогам выйдет примерно в 1,3 раза больше. Пусто — одна цена доставки (поле выше)
+          куда угодно; гость всё равно отмечает точку, курьер получит её в карточке заказа.</small>
+      </div>
     </fieldset>
     <fieldset id="payment">
       <legend>Оплата</legend>
@@ -82,4 +107,29 @@
   {% endif %}
   <form method="post" action="/settings/invite"><button>Новая ссылка-приглашение</button></form>
 </section>
+<script>
+  // the cafe's point: the pin stays in the centre, the map moves under it (the same as the guests' map)
+  addEventListener("load", () => {
+    const box = document.getElementById("cafe-map");
+    const form = box.closest("form");
+    const has = box.dataset.lat !== "";
+    const at = has ? [+box.dataset.lon, +box.dataset.lat] : [69.2797, 41.3111];
+    let map;
+    try {
+      map = new maplibregl.Map({ container: box, style: "https://tiles.openfreemap.org/styles/liberty",
+        center: at, zoom: has ? 16 : 11, dragRotate: false, attributionControl: { compact: true } });
+    } catch {
+      document.getElementById("where-note").textContent = "Карта не загрузилась в этом браузере.";
+      return;
+    }
+    map.touchZoomRotate.disableRotation();
+    map.on("moveend", (e) => {
+      if (!e.originalEvent) return;
+      const c = map.getCenter();
+      form.lat.value = c.lat.toFixed(6);
+      form.lon.value = c.lng.toFixed(6);
+      document.getElementById("where-note").textContent = "Новая точка — нажмите «Сохранить».";
+    });
+  });
+</script>
 {% endblock %}
