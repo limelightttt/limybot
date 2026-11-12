@@ -10,9 +10,9 @@
 </head>
 <body>
 <header>
-  <a class="brand" href="/ops"><strong>limybot · панель оператора</strong></a>
+  <a class="brand" href="/ops"><strong>limybot</strong></a>
   {% if request.cookies.get("ops") %}
-  <div class="header-actions"><form method="post" action="/ops/logout"><button class="ghost">Выйти</button></form></div>
+  <div class="header-actions"><a class="ghost" href="/ops/settings" style="text-decoration:none">Настройки</a><form method="post" action="/ops/logout"><button class="ghost">Выйти</button></form></div>
   {% endif %}
 </header>
 <main>

@@ -1,7 +1,8 @@
 """python -m cafe [run] [--open]                         — all bots, the admins, the operator panel and the Mini Apps;
                                                          --open also opens the panel in this machine's browser
 python -m cafe ops                                     — a login link to the operator panel (/ops)
-python -m cafe add --token <TOKEN> [--from clients/x.json] — connect a cafe (the panel does the same)
+python -m cafe add --token <TOKEN> [--from clients/x.json] [--demo] — connect a cafe with a trial period (the panel
+                                                         does the same); --demo: no time limit
 python -m cafe remove <name>                           — delete a cafe and everything of it
 python -m cafe token <name> <TOKEN>                    — replace a cafe's bot token
 python -m cafe invite <name>                           — new link that makes its opener an admin
@@ -13,10 +14,11 @@ python -m cafe list"""
 import argparse
 import asyncio
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from .backup import make_backup
+from .billing import TRIAL_DAYS
 from .config import Settings
 from .media import drop_photo
 from .runner import serve
@@ -54,6 +56,7 @@ def main() -> None:
     add = sub.add_parser("add", help="подключить новое кафе (то же есть в панели оператора)")
     add.add_argument("--token", required=True, help="токен бота от @BotFather")
     add.add_argument("--from", dest="template", type=Path, help="JSON с настройками и меню, см. clients/")
+    add.add_argument("--demo", action="store_true", help="без срока: демо или своё заведение, без пробного периода")
     rm = sub.add_parser("remove", help="удалить кафе со всеми данными")
     rm.add_argument("name")
     tok = sub.add_parser("token", help="сменить токен бота кафе")
@@ -109,7 +112,8 @@ def main() -> None:
                 f"Этот бот уже подключён — «{taken.name}» ({taken.slug}). Удалить: python -m cafe remove {taken.slug}"
             )
         username, name = check_token(args.token)
-        cafe_id = connect_cafe(store, settings.media_dir, args.token.strip(), username, name, template)
+        trial = None if args.demo else date.today() + timedelta(days=TRIAL_DAYS)
+        cafe_id = connect_cafe(store, settings.media_dir, args.token.strip(), username, name, template, trial)
         print(f"Готово: «{store.cafe(cafe_id).name}» подключено к @{username}. Запущенный limybot подхватит его сам.")
         print_invite(store, cafe_id)
         return

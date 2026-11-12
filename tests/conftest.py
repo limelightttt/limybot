@@ -98,6 +98,12 @@ def demo(store):
 
 
 @pytest.fixture
+def other(store):
+    """A second cafe in the same installation."""
+    return store.cafe(store.add_cafe("other", "2:other", name="Other"))
+
+
+@pytest.fixture
 def fake():
     session = FakeSession()
     return Bot("1:demo", session=session), session

@@ -8,15 +8,28 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .. import notify
 from ..bot import BUTTON
 from ..config import Settings
 from ..media import ensure_thumbs, thumb
-from ..models import APP_THEMES, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES
+from ..models import APP_THEMES, PAYMENT_METHODS, PAYMENT_STATUSES, STATUSES, Cafe
 from ..store import OPS, SESSION_TTL, Store
 from . import cafe_settings, menu, miniapp, ops, orders, promo
 from .common import COOKIE, Bots, LoginRequired, OpsLoginRequired, Web, secure_cookie
 
 HERE = pathlib.Path(__file__).parent
+
+
+def notice(store: Store, settings: Settings, cafe: Cafe) -> tuple[str, str] | None:
+    """The banner over the owner's admin about the subscription: (flash class, text)."""
+    if cafe.subscription()[0] == "paused":
+        who = notify.contact(store, settings)
+        return "danger", "Приём заказов приостановлен." + (f" Вопросы — {who}." if who else "")
+    due = notify.owner_reminder(store, settings, cafe)
+    if not due:
+        return None
+    kind, text = due
+    return ("danger" if kind in ("grace", "off") else ""), text
 
 
 def create_app(store: Store, settings: Settings, bots: Bots) -> FastAPI:
@@ -33,7 +46,7 @@ def create_app(store: Store, settings: Settings, bots: Bots) -> FastAPI:
         STATUSES=STATUSES,
         PAYMENT_METHODS=PAYMENT_METHODS,
         PAYMENT_STATUSES=PAYMENT_STATUSES,
-        SUPPORT=settings.support,
+        SUBSCRIPTION_NOTICE=lambda cafe: notice(store, settings, cafe),
     )
     templates.env.filters["thumb"] = thumb
     web = Web(store, settings, bots, templates)

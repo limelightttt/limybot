@@ -226,11 +226,16 @@ async def test_brand_and_promo_poster(web, store, demo, settings):
 async def test_subscription_banner(web, store, demo, settings):
     client, _ = web
     await login(client, store, demo.id)
-    assert "Подписка" not in (await client.get("/orders")).text
+    assert "Пробный период" not in (await client.get("/orders")).text  # no limit: nothing to say
+    store.set_paid_until(demo.id, demo.now().date() + timedelta(days=10))
+    assert "Пробный период" not in (await client.get("/orders")).text  # not yet
     store.set_paid_until(demo.id, demo.now().date() + timedelta(days=3))
-    assert "Подписка оплачена до" in (await client.get("/orders")).text
+    assert "Пробный период бота «Demo Coffee» заканчивается" in (await client.get("/orders")).text
     store.set_paid_until(demo.id, demo.now().date() - timedelta(days=1))
-    assert "бот не принимает заказы" in (await client.get("/orders")).text  # the owner can still log in and see
+    assert "Бот ещё принимает заказы до" in (await client.get("/orders")).text
+    store.set_paid_until(demo.id, demo.now().date() - timedelta(days=5))
+    page = (await client.get("/orders")).text  # the owner can still log in and see
+    assert "перестал принимать заказы" in page and "299 000 сум в месяц" in page
 
 
 async def test_admin_sees_only_own_cafe(web, store, demo):

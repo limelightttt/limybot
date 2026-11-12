@@ -7,6 +7,7 @@ import time as clock
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 
+from .billing import Payment, extend
 from .models import ACTIVE, HANDED_OVER, Cafe, CartLine, Category, Customer, Item, ModifierGroup, Option, Order
 
 # The current shape of the database: a new database is created from it and marked as up to date.
@@ -68,6 +69,15 @@ create table customers (
   cafe_id integer not null references cafes on delete cascade, user_id integer not null, phone text,
   address text, lang text not null default 'ru', primary key (cafe_id, user_id)
 );
+create table payments (
+  id integer primary key, cafe_id integer not null references cafes on delete cascade, amount integer not null,
+  months integer not null, until text not null, prev_until text, note text not null default '',
+  created_at text not null
+);
+create table reminders (cafe_id integer not null, kind text not null, key text not null,
+  primary key (cafe_id, kind, key));
+create table operators (chat_id integer primary key, name text not null default '');
+create table meta (key text primary key, value text not null);
 """
 
 # Steps that bring an existing database to SCHEMA; pragma user_version counts the applied ones.
@@ -96,6 +106,18 @@ MIGRATIONS = [
     # 2: the Mini App can keep the cafe's own light or dark look instead of following the guest's Telegram theme
     """
     alter table cafes add column app_theme text not null default 'auto';
+    """,
+    # 3: subscription payments, sent reminders, the operator's service bot (its chats and settings)
+    """
+    create table payments (
+      id integer primary key, cafe_id integer not null references cafes on delete cascade, amount integer not null,
+      months integer not null, until text not null, prev_until text, note text not null default '',
+      created_at text not null
+    );
+    create table reminders (cafe_id integer not null, kind text not null, key text not null,
+      primary key (cafe_id, kind, key));
+    create table operators (chat_id integer primary key, name text not null default '');
+    create table meta (key text primary key, value text not null);
     """,
 ]
 
@@ -226,6 +248,7 @@ class Store:
         with self.db:
             self.db.execute("delete from login_links where cafe_id = ?", (cafe_id,))
             self.db.execute("delete from sessions where cafe_id = ?", (cafe_id,))
+            self.db.execute("delete from reminders where cafe_id = ?", (cafe_id,))
             self.db.execute("delete from cafes where id = ?", (cafe_id,))  # the rest cascades
         return photos + [p for p in (cafe.logo, cafe.cover) if p]
 
@@ -252,6 +275,97 @@ class Store:
     def set_enabled(self, cafe_id: int, enabled: bool) -> None:
         with self.db:
             self.db.execute("update cafes set enabled = ? where id = ?", (int(enabled), cafe_id))
+
+    def _payment(self, row: sqlite3.Row) -> Payment:
+        d = dict(row)
+        d.update(
+            until=date.fromisoformat(d["until"]),
+            prev_until=date.fromisoformat(d["prev_until"]) if d["prev_until"] else None,
+            created_at=datetime.fromisoformat(d["created_at"]),
+        )
+        return Payment(**d)
+
+    def add_payment(self, cafe_id: int, amount: int, months: int, today: date, note: str = "") -> Payment:
+        """The owner paid for `months`: paid_until moves on (billing.extend) and the payment is kept."""
+        prev = self.cafe(cafe_id).paid_until
+        until = extend(prev, today, months)
+        with self.db:
+            payment_id = self.db.execute(
+                "insert into payments (cafe_id, amount, months, until, prev_until, note, created_at)"
+                " values (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    cafe_id,
+                    amount,
+                    months,
+                    until.isoformat(),
+                    prev.isoformat() if prev else None,
+                    note,
+                    datetime.now(UTC).isoformat(),
+                ),
+            ).lastrowid
+            self.db.execute("update cafes set paid_until = ? where id = ?", (until.isoformat(), cafe_id))
+        return self._payment(self.db.execute("select * from payments where id = ?", (payment_id,)).fetchone())
+
+    def payments(self, cafe_id: int) -> list[Payment]:
+        rows = self.db.execute("select * from payments where cafe_id = ? order by id desc", (cafe_id,))
+        return [self._payment(r) for r in rows]
+
+    def cancel_payment(self, cafe_id: int, payment_id: int) -> bool:
+        """A mistaken payment: only the latest one, and paid_until goes back to what it was before it."""
+        last = self.payments(cafe_id)[:1]
+        if not last or last[0].id != payment_id:
+            return False
+        prev = last[0].prev_until
+        with self.db:
+            self.db.execute("delete from payments where id = ?", (payment_id,))
+            self.db.execute(
+                "update cafes set paid_until = ? where id = ?", (prev.isoformat() if prev else None, cafe_id)
+            )
+        return True
+
+    def income(self, since: datetime) -> int:
+        """All cafes' payments to the operator since then."""
+        row = self.db.execute(
+            "select sum(amount) from payments where created_at >= ?", (since.astimezone(UTC).isoformat(),)
+        )
+        return row.fetchone()[0] or 0
+
+    # --- reminders: each one goes out once (cafe 0 — the operator's daily digest) ---
+    def reminded(self, cafe_id: int, kind: str, key: str) -> bool:
+        q = "select 1 from reminders where cafe_id = ? and kind = ? and key = ?"
+        return self.db.execute(q, (cafe_id, kind, key)).fetchone() is not None
+
+    def mark_reminded(self, cafe_id: int, kind: str, key: str) -> None:
+        with self.db:
+            self.db.execute("insert or ignore into reminders values (?, ?, ?)", (cafe_id, kind, key))
+
+    # --- the operator's service bot ---
+    def meta(self, key: str) -> str | None:
+        row = self.db.execute("select value from meta where key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str | None) -> None:
+        with self.db:
+            if value is None:
+                self.db.execute("delete from meta where key = ?", (key,))
+            else:
+                self.db.execute("insert or replace into meta values (?, ?)", (key, value))
+
+    def operators(self) -> list[tuple[int, str]]:
+        return [tuple(r) for r in self.db.execute("select chat_id, name from operators order by chat_id")]
+
+    def add_operator(self, code: str, chat_id: int, name: str) -> bool:
+        """The link from /ops (t.me/<service bot>?start=op-<code>) adds whoever opens it; it works once."""
+        if not code or code != self.meta("ops_invite"):
+            return False
+        with self.db:
+            self.db.execute("insert or replace into operators values (?, ?)", (chat_id, name))
+            self.db.execute("delete from meta where key = 'ops_invite'")
+        return True
+
+    def remove_operator(self, chat_id: int) -> None:
+        with self.db:
+            self.db.execute("delete from operators where chat_id = ?", (chat_id,))
 
     # --- admins ---
     def new_invite(self, cafe_id: int) -> str:
@@ -713,10 +827,12 @@ class Store:
         rows = self.db.execute("select chat_id, message_id from staff_messages where order_id = ?", (order_id,))
         return [(r[0], r[1]) for r in rows]
 
-    def stats(self, cafe_id: int, since: datetime) -> tuple[int, int]:
+    def stats(self, cafe_id: int, since: datetime, until: datetime | None = None) -> tuple[int, int]:
+        """(orders, their total) placed since then (and before `until`), cancelled ones not counted."""
+        end = until.astimezone(UTC).isoformat() if until else "9"
         n, total = self.db.execute(
             "select count(*), coalesce(sum(total), 0) from orders"
-            " where cafe_id = ? and status != 'cancelled' and created_at >= ?",
-            (cafe_id, since.astimezone(UTC).isoformat()),
+            " where cafe_id = ? and status != 'cancelled' and created_at >= ? and created_at < ?",
+            (cafe_id, since.astimezone(UTC).isoformat(), end),
         ).fetchone()
         return n, total

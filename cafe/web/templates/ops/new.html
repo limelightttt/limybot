@@ -23,6 +23,11 @@
     <label>или загрузите архив с меню и фото (.zip)
       <input type="file" name="pack" accept=".zip,application/zip">
     </label>
+    <fieldset class="plain">
+      <legend>Оплата</legend>
+      <label class="check"><input type="radio" name="plan" value="trial" {% if plan != "demo" %}checked{% endif %}> Клиент — 14 дней бесплатно, потом по подписке</label>
+      <label class="check"><input type="radio" name="plan" value="demo" {% if plan == "demo" %}checked{% endif %}> Демо или своё заведение — без срока</label>
+    </fieldset>
     <button class="primary">Подключить</button>
   </form>
 </section>

@@ -97,3 +97,13 @@ def test_cli_explains_a_bad_token_instead_of_a_traceback():
 def test_short_names_from_bot_usernames(store, demo):
     assert slug_for("Limy_Coffee_bot") == "limy_coffee" and slug_for("marrymebot") == "marryme"
     assert store.free_slug("demo") == "demo-2" and store.free_slug("tea") == "tea"
+
+
+def test_the_service_bot_is_run_like_a_cafe_bot(store, demo, settings):
+    runner = Runner(store, settings)
+    assert runner.token(OPS) is None and runner.token(demo.id) == demo.bot_token
+    store.set_meta("ops_bot_token", "9:ops")
+    runner.problems[OPS] = ("rejected", "9:ops")
+    assert runner.state(OPS) == "rejected"
+    store.set_meta("ops_bot_token", "9:new")  # a new token: tried again
+    assert runner.state(OPS) == "starting"

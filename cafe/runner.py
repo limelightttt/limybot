@@ -25,6 +25,7 @@ from .bot import app_url, build
 from .config import Settings
 from .i18n import LANGS
 from .models import BOT_STATES
+from .notify import Notifier, build_ops
 from .store import OPERATOR, OPS, Store
 from .tokens import bot_profile
 from .tunnel import close_tunnel, needs_tunnel, open_tunnel
@@ -50,32 +51,41 @@ class Runner:
         self.problems: dict[int, tuple[str, str]] = {}  # cafe id → (state, token it happened with)
         self.lock = asyncio.Lock()  # the periodic sync and the operator panel must not start one bot twice
         self.backed_up: date | None = None
+        self.notifier = Notifier(store, settings, self.bot, self.state)
 
     # --- what the web side uses (web.common.Bots) ---
     def bot(self, cafe_id: int) -> Bot | None:
         r = self.running.get(cafe_id)
         return r.bot if r else None
 
+    def token(self, cafe_id: int) -> str | None:
+        """What the bot should run with now; OPS is the operator's service bot (set in /ops)."""
+        if cafe_id == OPS:
+            return self.store.meta("ops_bot_token")
+        cafe = self.store.cafe(cafe_id)
+        return cafe.bot_token if cafe else None
+
     def state(self, cafe_id: int) -> str:
         if cafe_id in self.running:
             return "running"
-        cafe = self.store.cafe(cafe_id)
+        token = self.token(cafe_id)
         problem = self.problems.get(cafe_id)
-        return problem[0] if cafe and problem and problem[1] == cafe.bot_token else "starting"
+        return problem[0] if token and problem and problem[1] == token else "starting"
 
     async def check(self, token: str) -> tuple[str, str]:
         return await bot_profile(token)
 
     async def sync(self) -> None:
         async with self.lock:
-            cafes = {c.id: c for c in self.store.cafes()}
+            wanted = {c.id: (c.slug, c.bot_token) for c in self.store.cafes()}
+            if ops := self.store.meta("ops_bot_token"):
+                wanted[OPS] = ("служебный бот", ops)
             for cafe_id in list(self.running):
-                if cafe_id not in cafes or cafes[cafe_id].bot_token != self.running[cafe_id].token:
+                if cafe_id not in wanted or wanted[cafe_id][1] != self.running[cafe_id].token:
                     await self.stop(cafe_id)
-            for cafe in cafes.values():
-                rejected = self.problems.get(cafe.id) == ("rejected", cafe.bot_token)
-                if cafe.id not in self.running and not rejected:
-                    await self.start(cafe.id, cafe.slug, cafe.bot_token)
+            for cafe_id, (slug, token) in wanted.items():
+                if cafe_id not in self.running and self.problems.get(cafe_id) != ("rejected", token):
+                    await self.start(cafe_id, slug, token)
 
     # --- bots ---
     async def start(self, cafe_id: int, slug: str, token: str) -> None:
@@ -99,18 +109,33 @@ class Runner:
             await bot.session.close()
             return
         self.problems.pop(cafe_id, None)
-        self.store.set_bot_username(cafe_id, me.username)
+        if cafe_id == OPS:
+            self.store.set_meta("ops_bot_username", me.username)
+        else:
+            self.store.set_bot_username(cafe_id, me.username)
         try:
             await self.setup_chat(bot, cafe_id)
         except (TelegramBadRequest, TelegramNetworkError, TelegramServerError) as e:  # cosmetic: the bot works anyway
             log.warning("%s: cannot set the menu button and commands: %s", slug, e)
-        dp = build(self.store, cafe_id, self.settings)
+        dp = (
+            build_ops(self.store, self.settings, self.state)
+            if cafe_id == OPS
+            else build(self.store, cafe_id, self.settings)
+        )
         task = asyncio.create_task(dp.start_polling(bot, handle_signals=False))
         self.running[cafe_id] = Running(token, bot, dp, task)
         log.info("%s: @%s работает", slug, me.username)
 
     async def setup_chat(self, bot: Bot, cafe_id: int) -> None:
         """The "Menu" button next to the input field opens the Mini App; the command list in both languages."""
+        if cafe_id == OPS:
+            await bot.set_my_commands(
+                [
+                    BotCommand(command="panel", description="Вход в панель"),
+                    BotCommand(command="status", description="Сводка"),
+                ]
+            )
+            return
         commands = {
             "ru": [
                 BotCommand(command="start", description="Меню"),
@@ -188,6 +213,10 @@ class Runner:
             webbrowser.open(self.panel_link())
         while True:
             await self.backup()
+            try:
+                await self.notifier.tick()
+            except Exception:  # a reminder that failed must never stop the bots; it is retried on the next tick
+                log.exception("notifications failed")
             await asyncio.sleep(SYNC_EVERY)
             if tunnel and tunnel.returncode is not None:
                 log.error("Туннель cloudflared остановился — витрина не открывается. Перезапустите ./run.sh")
