@@ -3,14 +3,17 @@ the command line: connect a cafe (bot token + a menu template or a zip pack), se
 owner their invite link, subscription, pause, a new token, deleting, and opening any cafe's admin to fill it in.
 The login link is printed by ./run.sh at start (or `python -m cafe ops`)."""
 
+import secrets
 import tempfile
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import RedirectResponse
 
+from .. import notify
+from ..billing import GRACE_DAYS, SUBSCRIPTION, TRIAL_DAYS, last_order_day
 from ..config import ROOT
 from ..media import drop_photo
 from ..models import BOT_STATES, Cafe
@@ -40,13 +43,37 @@ def router(web: Web) -> APIRouter:
         state = bots.state(cafe.id)
         if state != "running":
             return ("bad" if state == "rejected" else "warn"), BOT_STATES[state]
-        if not cafe.enabled:
-            return "warn", "Приостановлено — заказы не принимаются"
-        if not cafe.active():
-            return "bad", f"Подписка закончилась {cafe.paid_until:%d.%m.%Y} — заказы не принимаются"
+        sub, _ = cafe.subscription()
+        if sub == "paused":
+            return "warn", "Приостановлено вами — заказы не принимаются"
+        if sub == "off":
+            return "bad", f"Не оплачено с {cafe.paid_until:%d.%m} — заказы не принимаются"
+        if sub == "grace":
+            return "bad", f"Не оплачено — отключится после {last_order_day(cafe.paid_until):%d.%m}"
         if not store.admins(cafe.id):
             return "warn", "Владелец ещё не подключился — отправьте ему ссылку-приглашение"
+        if sub == "soon":
+            return "warn", f"Работает · оплачено до {cafe.paid_until:%d.%m}, скоро платить"
         return "ok", "Работает"
+
+    def subscription(cafe: Cafe) -> str:
+        """The subscription in one line for the cafe page."""
+        sub, _ = cafe.subscription()
+        trial = not store.payments(cafe.id)
+        if sub == "unlimited":
+            return "Без срока — демо или своё заведение, оплата не нужна."
+        if sub == "paused":
+            return "Приостановлено вами: бот не принимает заказы, пока вы не включите его снова."
+        until = f"{cafe.paid_until:%d.%m.%Y}"
+        what = "Пробный период" if trial else "Оплачено"
+        if sub in ("ok", "soon"):
+            return f"{what} до {until} включительно."
+        if sub == "grace":
+            return (
+                f"Не оплачено: срок кончился {until}. Отсрочка {GRACE_DAYS} дня — заказы принимаются до "
+                f"{last_order_day(cafe.paid_until):%d.%m}, владельцу уже напомнили."
+            )
+        return f"Не оплачено с {until}: бот не принимает заказы. Запишите оплату — он включится сразу."
 
     def cookie(request: Request, resp: RedirectResponse, name: str, value: str) -> RedirectResponse:
         resp.set_cookie(
@@ -79,7 +106,18 @@ def router(web: Web) -> APIRouter:
     @r.get("", dependencies=[Operator])
     async def index(request: Request):
         cafes = [(c, status(c), store.stats(c.id, c.today())) for c in store.cafes()]
-        return page(request, "index.html", cafes=cafes, public_url=settings.public_url)
+        month_start = datetime.now(notify.TZ).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        paying = [c for c in store.cafes() if c.subscription()[0] in ("ok", "soon") and store.payments(c.id)]
+        return page(
+            request,
+            "index.html",
+            cafes=cafes,
+            public_url=settings.public_url,
+            income=store.income(month_start),
+            paying=len(paying),
+            monthly=sum(p.amount / p.months for c in paying for p in store.payments(c.id)[:1]),
+            service_bot=bool(store.operators()),
+        )
 
     @r.get("/new", dependencies=[Operator])
     async def new(request: Request):
@@ -91,12 +129,13 @@ def router(web: Web) -> APIRouter:
         token: Annotated[str, Form()],
         template: Annotated[str, Form()] = "",
         pack: Annotated[UploadFile | None, File()] = None,
+        plan: Annotated[str, Form()] = "trial",
     ):
         token = token.strip()
         templates = available_templates(CLIENTS)
 
         def again(error: str):  # the form back with what was typed, so nothing is pasted twice
-            return page(request, "new.html", templates=templates, token=token, chosen=template, error=error)
+            return page(request, "new.html", templates=templates, token=token, chosen=template, plan=plan, error=error)
 
         if taken := store.cafe_by_token(token):
             return again(f"Этот бот уже подключён — «{taken.name}». Для другого заведения нужен другой бот.")
@@ -117,7 +156,8 @@ def router(web: Web) -> APIRouter:
                     chosen = None
             except ValueError as e:  # also pydantic's ValidationError: the JSON is not a menu
                 return again(f"Шаблон не подошёл: {e}")
-            cafe_id = connect_cafe(store, settings.media_dir, token, username, name, chosen)
+            trial = None if plan == "demo" else date.today() + timedelta(days=TRIAL_DAYS)
+            cafe_id = connect_cafe(store, settings.media_dir, token, username, name, chosen, trial)
         await bots.sync()
         return back(f"/ops/cafes/{cafe_id}", "Заведение подключено. Отправьте владельцу ссылку-приглашение ниже.")
 
@@ -134,6 +174,10 @@ def router(web: Web) -> APIRouter:
             admins=store.admins(cafe.id),
             today=store.stats(cafe.id, cafe.today()),
             public_url=settings.public_url,
+            subscription=subscription(cafe),
+            sub_state=SUBSCRIPTION[cafe.subscription()[0]],
+            payments=store.payments(cafe.id),
+            price=notify.price(store),
         )
 
     @r.post("/cafes/{cafe_id}/invite", dependencies=[Operator])
@@ -148,6 +192,27 @@ def router(web: Web) -> APIRouter:
         except ValueError:
             return back(f"/ops/cafes/{cafe_id}", "Не понял дату")
         return back(f"/ops/cafes/{cafe_id}", "Срок подписки сохранён")
+
+    @r.post("/cafes/{cafe_id}/payment", dependencies=[Operator])
+    async def payment(
+        cafe_id: int,
+        amount: Annotated[int, Form(ge=0)],
+        months: Annotated[int, Form(ge=1, le=24)] = 1,
+        note: Annotated[str, Form()] = "",
+    ):
+        cafe = store.cafe(cafe_id)
+        if not cafe:
+            return back("/ops")
+        paid = store.add_payment(cafe_id, amount, months, cafe.now().date(), note.strip())
+        if not cafe.enabled:  # paused for not paying: paying switches it back on
+            store.set_enabled(cafe_id, True)
+        await notify.payment_received(store, bots.bot(cafe_id), cafe, paid.until)
+        return back(f"/ops/cafes/{cafe_id}#subscription", f"Оплата записана — работает до {paid.until:%d.%m.%Y}")
+
+    @r.post("/cafes/{cafe_id}/payments/{payment_id}/cancel", dependencies=[Operator])
+    async def cancel_payment(cafe_id: int, payment_id: int):
+        done = store.cancel_payment(cafe_id, payment_id)
+        return back(f"/ops/cafes/{cafe_id}#subscription", "Оплата отменена, срок вернулся" if done else None)
 
     @r.post("/cafes/{cafe_id}/enabled", dependencies=[Operator])
     async def enabled(cafe_id: int, on: Annotated[bool, Form()] = False):
@@ -180,6 +245,59 @@ def router(web: Web) -> APIRouter:
             drop_photo(settings.media_dir, name)
         await bots.sync()
         return back("/ops", f"«{cafe.name}» удалено. Бот @{cafe.bot_username} свободен — его можно подключить заново.")
+
+    # --- the operator's own settings: payment contact, price, the service bot ---
+    @r.get("/settings", dependencies=[Operator])
+    async def ops_settings(request: Request):
+        username = store.meta("ops_bot_username")
+        invite = None
+        if store.meta("ops_bot_token") and username:
+            code = store.meta("ops_invite")
+            if not code:
+                code = secrets.token_urlsafe(9)
+                store.set_meta("ops_invite", code)
+            invite = f"https://t.me/{username}?start=op-{code}"
+        return page(
+            request,
+            "settings.html",
+            support=notify.contact(store, settings),
+            price=notify.price(store),
+            bot_username=username if store.meta("ops_bot_token") else None,
+            bot_state=BOT_STATES[bots.state(OPS)] if store.meta("ops_bot_token") else None,
+            invite=invite,
+            operators=store.operators(),
+        )
+
+    @r.post("/settings", dependencies=[Operator])
+    async def save_settings(support: Annotated[str, Form()] = "", price: Annotated[int, Form(ge=0)] = 0):
+        store.set_meta("support", support.strip() or None)
+        store.set_meta("price", str(price) if price else None)
+        return back("/ops/settings", "Сохранено")
+
+    @r.post("/settings/bot", dependencies=[Operator])
+    async def service_bot(token: Annotated[str, Form()] = ""):
+        token = token.strip()
+        if not token:
+            store.set_meta("ops_bot_token", None)
+            store.set_meta("ops_bot_username", None)
+            await bots.sync()
+            return back("/ops/settings", "Служебный бот отключён")
+        if store.cafe_by_token(token):
+            return back("/ops/settings#bot", "Этот бот уже работает у заведения — для уведомлений нужен отдельный бот")
+        try:
+            username, _ = await bots.check(token)
+        except TokenError as e:
+            return back("/ops/settings#bot", str(e))
+        store.set_meta("ops_bot_token", token)
+        store.set_meta("ops_bot_username", username)
+        store.set_meta("ops_invite", None)  # a new bot: a new link
+        await bots.sync()
+        return back("/ops/settings#bot", f"@{username} подключён. Теперь откройте ссылку ниже в Telegram.")
+
+    @r.post("/settings/operators/{chat_id}/remove", dependencies=[Operator])
+    async def remove_operator(chat_id: int):
+        store.remove_operator(chat_id)
+        return back("/ops/settings#bot")
 
     @r.post("/cafes/{cafe_id}/admin", dependencies=[Operator])
     async def open_admin(request: Request, cafe_id: int):

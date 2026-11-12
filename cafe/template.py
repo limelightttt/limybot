@@ -3,7 +3,7 @@ Pictures (logo, cover, item photos) are paths relative to the JSON file, so a cl
 
 import re
 import zipfile
-from datetime import time
+from datetime import date, time
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -178,14 +178,22 @@ def slug_for(username: str) -> str:
 
 
 def connect_cafe(
-    store: Store, media_dir: Path, token: str, username: str, bot_name: str, template: Template | None
+    store: Store,
+    media_dir: Path,
+    token: str,
+    username: str,
+    bot_name: str,
+    template: Template | None,
+    paid_until: date | None = None,
 ) -> int:
     """A new cafe on a checked bot token: menu and look from the template (an empty menu named after the bot without
-    one), a short name from the bot's username, and an invite link for the owner."""
+    one), a short name from the bot's username, an invite link for the owner and the trial period (paid_until;
+    None — no limit, for a demo)."""
     media_dir.mkdir(parents=True, exist_ok=True)
     cafe_id = import_cafe(
         store, store.free_slug(slug_for(username)), token, template or Template(name=bot_name), media_dir
     )
     store.set_bot_username(cafe_id, username)
+    store.set_paid_until(cafe_id, paid_until)
     store.new_invite(cafe_id)
     return cafe_id

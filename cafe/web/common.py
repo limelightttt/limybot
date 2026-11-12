@@ -66,5 +66,8 @@ def secure_cookie(request: Request, settings: Settings) -> bool:
 
 
 def back(url: str, msg: str | None = None) -> RedirectResponse:
-    sep = "&" if "?" in url else "?"
-    return RedirectResponse(url + (f"{sep}msg={quote(msg)}" if msg else ""), status_code=303)
+    """Redirect after a form, with a message shown on top; the #anchor stays last, where the browser looks for it."""
+    url, _, anchor = url.partition("#")
+    if msg:
+        url += ("&" if "?" in url else "?") + f"msg={quote(msg)}"
+    return RedirectResponse(url + (f"#{anchor}" if anchor else ""), status_code=303)

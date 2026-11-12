@@ -4,6 +4,14 @@
   <h1 style="margin:0">Заведения</h1>
   <a class="button primary" href="/ops/new">+ Подключить</a>
 </div>
+<section class="card money">
+  <div><small class="muted">Оплат в этом месяце</small><br><strong>{{ "{:,}".format(income).replace(",", " ") }} сум</strong></div>
+  <div><small class="muted">Платящих заведений</small><br><strong>{{ paying }}</strong></div>
+  <div><small class="muted">В месяц от них</small><br><strong>{{ "{:,}".format(monthly | int).replace(",", " ") }} сум</strong></div>
+</section>
+{% if not service_bot %}
+<p class="flash">Подключите <a href="/ops/settings#bot">служебный бот</a> — он будет присылать вам напоминания, кто должен заплатить, и тревоги, если бот заведения сломался.</p>
+{% endif %}
 {% if not public_url.startswith("https://") %}
 <p class="flash danger">Нет https-адреса — боты отвечают, но витрина (меню) в Telegram не откроется.
   На своём компьютере установите cloudflared (Mac: <code>brew install cloudflared</code>) и перезапустите <code>./run.sh</code>.</p>

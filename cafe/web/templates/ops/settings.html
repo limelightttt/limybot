@@ -1,0 +1,54 @@
+{% extends "ops/base.html" %}
+{% block title %}Настройки{% endblock %}
+{% block content %}
+<p><a href="/ops">← Заведения</a></p>
+<section class="card">
+  <h1>Подписка для заведений</h1>
+  <form method="post" action="/ops/settings" class="stack">
+    <label>Куда платить и писать по подписке
+      <input name="support" value="{{ support }}" placeholder="@ваш_ник или +998 90 123 45 67" autocomplete="off">
+    </label>
+    <label>Цена в месяц, сум <input type="number" name="price" value="{{ price }}" min="0" step="1000"></label>
+    <button class="primary">Сохранить</button>
+  </form>
+  <p class="muted">Это видят владельцы в напоминаниях об оплате и в админке. Новое заведение работает 14 дней бесплатно; после
+    срока — ещё 2 дня отсрочки, затем бот перестаёт принимать заказы (ничего не удаляется), пока вы не запишете оплату.</p>
+</section>
+
+<section class="card" id="bot">
+  <h2>Служебный бот</h2>
+  <p>Ваш личный бот для уведомлений: каждое утро — сводка (кто скоро платит, кто не оплатил, вчерашние заказы), сразу —
+    тревога, если заведение отключилось или его бот сломался. Команда <code>/panel</code> в нём даёт вход в эту панель
+    с телефона.</p>
+  {% if bot_username %}
+  <p>@{{ bot_username }} — {{ bot_state }}.</p>
+  {% if operators %}
+  <p>Уведомления получают:</p>
+  <ul>{% for chat_id, name in operators %}
+    <li class="inline">{{ name or chat_id }}
+      <form method="post" action="/ops/settings/operators/{{ chat_id }}/remove"><button>Убрать</button></form></li>
+  {% endfor %}</ul>
+  {% endif %}
+  {% if invite %}
+  <p><b>{% if operators %}Добавить ещё человека{% else %}Последний шаг{% endif %}:</b> откройте ссылку в Telegram и нажмите «Старт».</p>
+  <input id="opinvite" value="{{ invite }}" readonly>
+  <div class="actions-row" style="margin-top:8px">
+    <a class="button primary" href="{{ invite }}" target="_blank" rel="noopener">Открыть в Telegram</a>
+    <button type="button" data-copy="opinvite">Скопировать</button>
+  </div>
+  {% endif %}
+  <details style="margin-top:12px">
+    <summary>Сменить или отключить бота</summary>
+  {% else %}
+  <ol class="steps">
+    <li>В <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a>: <code>/newbot</code> → имя, например «limybot · уведомления» → адрес на <code>bot</code>.</li>
+    <li>Вставьте токен сюда.</li>
+  </ol>
+  {% endif %}
+  <form method="post" action="/ops/settings/bot" class="inline">
+    <input name="token" autocomplete="off" spellcheck="false" placeholder="Токен служебного бота">
+    <button>{% if bot_username %}Сменить{% else %}Подключить{% endif %}</button>
+  </form>
+  {% if bot_username %}<p class="muted">Пустое поле и «Сменить» — отключить.</p></details>{% endif %}
+</section>
+{% endblock %}

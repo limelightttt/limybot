@@ -10,8 +10,10 @@ from PIL import Image
 from pydantic import ValidationError
 
 from cafe import backup as backup_module
+from cafe import billing
 from cafe import store as store_module
 from cafe.backup import make_backup
+from cafe.billing import add_months, extend
 from cafe.media import ensure_thumbs, save_photo, thumb
 from cafe.store import MIGRATIONS, Store
 from cafe.template import Template, import_cafe, load_template
@@ -200,8 +202,10 @@ def test_opening_hours_subscription_and_money(store, demo):
     today = c.now().date()
     store.set_paid_until(demo.id, today)
     assert store.cafe(demo.id).active()  # the last paid day still works
-    store.set_paid_until(demo.id, today - timedelta(days=1))
-    assert not store.cafe(demo.id).active()
+    store.set_paid_until(demo.id, today - timedelta(days=2))
+    assert store.cafe(demo.id).subscription() == ("grace", -2) and store.cafe(demo.id).active()
+    store.set_paid_until(demo.id, today - timedelta(days=3))
+    assert store.cafe(demo.id).subscription() == ("off", -3) and not store.cafe(demo.id).active()
     store.set_paid_until(demo.id, None)
     store.set_enabled(demo.id, False)
     assert not store.cafe(demo.id).active()
@@ -337,3 +341,45 @@ def test_template_with_pictures(store, settings, tmp_path):
         load_template(pack / "burger.json")
     with pytest.raises(ValidationError):
         Template(name="X", app_theme="neon")
+
+
+def test_months_and_extending_a_subscription():
+    assert add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+    assert add_months(date(2026, 11, 15), 3) == date(2027, 2, 15)
+    today = date(2026, 3, 10)
+    assert extend(None, today, 1) == date(2026, 4, 10)  # the first payment counts from today
+    assert extend(date(2026, 3, 20), today, 1) == date(2026, 4, 20)  # paid early: nothing is lost
+    assert extend(date(2026, 3, 8), today, 1) == date(2026, 4, 8)  # paid during the grace days: they are not free
+    assert extend(date(2026, 2, 1), today, 1) == date(2026, 4, 10)  # long switched off: from today
+    assert billing.state(True, date(2026, 3, 14), today) == ("ok", 4)
+    assert billing.state(True, date(2026, 3, 13), today) == ("soon", 3)
+    assert billing.state(False, None, today) == ("paused", None)
+    assert billing.days(1) == "1 день" and billing.days(3) == "3 дня" and billing.days(11) == "11 дней"
+
+
+def test_payments_move_paid_until_and_can_be_undone(store, demo, other):
+    today = store.cafe(demo.id).now().date()
+    store.set_paid_until(demo.id, today + timedelta(days=5))
+    first = store.add_payment(demo.id, 299000, 1, today, "Click с карты Азиза")
+    assert first.until == add_months(today + timedelta(days=5), 1) == store.cafe(demo.id).paid_until
+    second = store.add_payment(demo.id, 897000, 3, today)
+    assert store.cafe(demo.id).paid_until == add_months(first.until, 3)
+    assert [p.id for p in store.payments(demo.id)] == [second.id, first.id] and store.payments(other.id) == []
+    assert not store.cancel_payment(demo.id, first.id)  # only the latest
+    assert not store.cancel_payment(other.id, second.id)  # and only the cafe's own
+    assert store.cancel_payment(demo.id, second.id) and store.cafe(demo.id).paid_until == first.until
+    assert store.income(datetime.now(UTC) - timedelta(hours=1)) == 299000
+
+
+def test_reminders_and_operators(store, demo):
+    assert not store.reminded(demo.id, "soon", "2026-01-01")
+    store.mark_reminded(demo.id, "soon", "2026-01-01")
+    store.mark_reminded(demo.id, "soon", "2026-01-01")
+    assert store.reminded(demo.id, "soon", "2026-01-01")
+    assert not store.add_operator("", 5, "Me")
+    store.set_meta("ops_invite", "abc")
+    assert not store.add_operator("wrong", 5, "Me") and store.add_operator("abc", 5, "Me")
+    assert not store.add_operator("abc", 6, "Stranger")  # the link works once
+    assert store.operators() == [(5, "Me")]
+    store.delete_cafe(demo.id)
+    assert not store.reminded(demo.id, "soon", "2026-01-01")

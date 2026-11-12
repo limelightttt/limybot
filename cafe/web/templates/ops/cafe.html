@@ -49,17 +49,44 @@
   {% endif %}
 </section>
 
-<section class="card">
+<section class="card" id="subscription">
   <h2>Подписка</h2>
-  <form method="post" action="/ops/cafes/{{ cafe.id }}/paid" class="inline">
-    <label class="grow">Оплачено до <input type="date" name="until" value="{{ cafe.paid_until.isoformat() if cafe.paid_until else '' }}"></label>
-    <button>Сохранить</button>
+  <p>{{ subscription }}</p>
+  <form method="post" action="/ops/cafes/{{ cafe.id }}/payment" class="stack">
+    <b>Оплата получена</b>
+    <div class="inline">
+      <label class="grow">Сумма, сум <input type="number" name="amount" value="{{ price }}" min="0" step="1000" required></label>
+      <label>Месяцев
+        <select name="months">{% for m in (1, 2, 3, 6, 12) %}<option value="{{ m }}">{{ m }}</option>{% endfor %}</select>
+      </label>
+    </div>
+    <label>Примечание <input name="note" placeholder="например: перевод с карты Азиза" autocomplete="off"></label>
+    <button class="primary">Записать оплату</button>
   </form>
-  <p class="muted">Пусто — без срока. После этой даты бот перестанет принимать заказы, владелец увидит это в админке.</p>
-  <form method="post" action="/ops/cafes/{{ cafe.id }}/enabled">
-    {% if cafe.enabled %}<button class="danger">Остановить приём заказов</button>
-    {% else %}<input type="hidden" name="on" value="1"><button class="primary">Снова принимать заказы</button>{% endif %}
-  </form>
+  <p class="muted">Срок продлится сам{% if cafe.paid_until %} — от {{ cafe.paid_until.strftime("%d.%m") }}, если оплата вовремя или в отсрочку, иначе от сегодня{% endif %}. Владелец получит «Оплата получена».{% if not cafe.enabled %} Приостановленное заведение оплата включит снова.{% endif %}</p>
+  {% if payments %}
+  <table class="payments">
+    {% for p in payments %}
+    <tr>
+      <td>{{ p.created_at.astimezone(cafe.now().tzinfo).strftime("%d.%m.%Y") }}</td>
+      <td>{{ cafe.money(p.amount) }} · {{ p.months }} мес.<br><small class="muted">до {{ p.until.strftime("%d.%m.%Y") }}{% if p.note %} · {{ p.note }}{% endif %}</small></td>
+      <td>{% if loop.first %}<form method="post" action="/ops/cafes/{{ cafe.id }}/payments/{{ p.id }}/cancel"><button onclick="return confirm('Отменить эту оплату? Срок вернётся к {{ p.prev_until.strftime('%d.%m.%Y') if p.prev_until else 'без срока' }}.')">Отменить</button></form>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <details>
+    <summary>Другое: приостановить, срок вручную</summary>
+    <form method="post" action="/ops/cafes/{{ cafe.id }}/enabled" style="margin:12px 0">
+      {% if cafe.enabled %}<button class="danger">Приостановить — бот перестанет принимать заказы</button>
+      {% else %}<input type="hidden" name="on" value="1"><button class="primary">Снова принимать заказы</button>{% endif %}
+    </form>
+    <form method="post" action="/ops/cafes/{{ cafe.id }}/paid" class="inline">
+      <label class="grow">Оплачено до <input type="date" name="until" value="{{ cafe.paid_until.isoformat() if cafe.paid_until else '' }}"></label>
+      <button>Сохранить</button>
+    </form>
+    <p class="muted">Пустая дата — без срока (демо, своё заведение). Записать оплату удобнее кнопкой выше: она ведёт историю.</p>
+  </details>
 </section>
 
 <section class="card">

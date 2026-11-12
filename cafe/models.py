@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
+from . import billing
+
 STATUSES = {
     "new": "Новый",
     "accepted": "Принят",
@@ -65,7 +67,7 @@ class Cafe:
     cover: str | None
     card_number: str
     card_holder: str
-    paid_until: date | None  # set by the operator: python -m cafe paid <name> <date>
+    paid_until: date | None  # the last paid day; None — no limit (the operator's own or a demo). See billing.py
     enabled: bool
     app_theme: str  # one of APP_THEMES
 
@@ -85,9 +87,13 @@ class Cafe:
     def hours(self) -> str:
         return f"{self.open_time:%H:%M}–{self.close_time:%H:%M}" if self.open_time and self.close_time else ""
 
+    def subscription(self) -> tuple[str, int | None]:
+        """(state from billing.SUBSCRIPTION, days left until paid_until)."""
+        return billing.state(self.enabled, self.paid_until, self.now().date())
+
     def active(self) -> bool:
-        """Takes orders: not switched off by the operator and the subscription is paid."""
-        return self.enabled and (self.paid_until is None or self.paid_until >= self.now().date())
+        """Takes orders: not paused by the operator and paid (the grace days after paid_until count as paid)."""
+        return self.subscription()[0] not in ("paused", "off")
 
     def payment_methods(self) -> list[str]:
         return ["cash", "transfer"] if self.card_number else ["cash"]

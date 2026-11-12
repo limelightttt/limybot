@@ -34,12 +34,8 @@
 </nav>
 {% endif %}
 <main>
-  {% if cafe and not cafe.active() %}
-  <p class="flash danger">Подписка {% if cafe.paid_until and cafe.enabled %}закончилась {{ cafe.paid_until.strftime("%d.%m.%Y") }}{% else %}приостановлена{% endif %} —
-    бот не принимает заказы.{% if SUPPORT %} Чтобы продлить, напишите {{ SUPPORT }}.{% endif %}</p>
-  {% elif cafe and cafe.paid_until and (cafe.paid_until - cafe.now().date()).days <= 5 %}
-  <p class="flash">Подписка оплачена до {{ cafe.paid_until.strftime("%d.%m.%Y") }}.{% if SUPPORT %} Продлить: {{ SUPPORT }}.{% endif %}</p>
-  {% endif %}
+  {% set sub = SUBSCRIPTION_NOTICE(cafe) if cafe else None %}
+  {% if sub %}<p class="flash {{ sub[0] }}" style="white-space:pre-line">{{ sub[1] }}</p>{% endif %}
   {% if msg %}<p class="flash">{{ msg }}</p>{% endif %}
   {% block content %}{% endblock %}
 </main>
